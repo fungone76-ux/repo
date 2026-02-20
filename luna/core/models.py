@@ -252,7 +252,17 @@ class GameState(LunaBaseModel):
         outfit = self.get_outfit()
         return outfit.to_prompt_string()
 
+    # ========================================================================
+    # FIX ASSOLUTO: Ponte per la retrocompatibilità di `flags`
+    # ========================================================================
+    @property
+    def flags(self) -> Dict[str, Any]:
+        """Ponte di sicurezza: se un vecchio file chiede .flags, restituisce .quest_flags."""
+        return self.quest_flags
 
+    @flags.setter
+    def flags(self, value: Dict[str, Any]) -> None:
+        self.quest_flags = value
 # =============================================================================
 # LLM Response Models
 # =============================================================================

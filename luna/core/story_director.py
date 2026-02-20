@@ -20,7 +20,7 @@ class StoryDirector:
     1. Tracks which story beats have been completed
     2. Evaluates trigger conditions to activate beats
     3. Generates specific instructions for the LLM
-    4. Validates that beats were executed correctly (using LLM as a Judge)
+    4. Validates that beats were executed correctly
     5. Maintains narrative coherence across turns
     """
 
@@ -94,7 +94,7 @@ class StoryDirector:
             context[f"affinity_{char.lower()}"] = value
 
         # Add flags
-        for flag, value in game_state.flags.items():
+        for flag, value in game_state.quest_flags.items():
             context[flag] = value
 
         try:
@@ -169,15 +169,23 @@ class StoryDirector:
         Returns:
             Tuple of (success, quality_score, missing_elements)
         """
-        # 1. Fallback Text Check (Troviamo quali parole esatte mancano)
         missing = []
         response_lower = llm_response.lower()
+
+        # Check required elements
         for element in beat.required_elements:
+            # Simple substring check (can be enhanced with NLP)
             if element.lower() not in response_lower:
                 missing.append(element)
 
+        # Calculate quality score
+        if not beat.required_elements:
+            base_quality = 1.0
+        else:
+            found = len(beat.required_elements) - len(missing)
+            base_quality = found / len(beat.required_elements)
+
         base_success = len(missing) == 0
-        base_quality = 1.0 if not beat.required_elements else (len(beat.required_elements) - len(missing)) / len(beat.required_elements)
 
         # 2. LLM Judge Validation (Controllo Semantico)
         llm_manager = get_llm_manager()
@@ -360,7 +368,7 @@ class StoryDirector:
                     if match:
                         flag_name = match.group(1)
                         flag_value = match.group(2).lower() == "true"
-                        game_state.flags[flag_name] = flag_value
+                        game_state.quest_flags[flag_name] = flag_value
 
         except Exception as e:
             print(f"[StoryDirector] Error applying consequences: {e}")

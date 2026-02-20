@@ -25,8 +25,9 @@ class SDWebUIClient:
     def __init__(self) -> None:
         """Initialize SD WebUI client."""
         self.settings = get_settings()
-        self.timeout = aiohttp.ClientTimeout(total=120)
-    
+        # FIX: Alzato il timeout a 600 secondi (10 minuti) per le GPU che ci mettono un po'
+        self.timeout = aiohttp.ClientTimeout(total=600)
+
     async def generate(
         self,
         prompt: ImagePrompt,
@@ -34,17 +35,17 @@ class SDWebUIClient:
         save_dir: Optional[Path] = None,
     ) -> Optional[Path]:
         """Generate image using SD WebUI.
-        
+
         Args:
             prompt: Built image prompt
             character_name: Character name
             save_dir: Directory to save image
-            
+
         Returns:
             Path to generated image or None
         """
         sd_url = self.settings.local_sd_url
-        
+
         try:
             # Prepare payload for SD WebUI API
             payload = {
@@ -59,11 +60,11 @@ class SDWebUIClient:
                 "batch_size": 1,
                 "n_iter": 1,
             }
-            
+
             print(f"\n[SD WebUI] Generating {character_name}...")
             print(f"[SD WebUI] Size: {prompt.width}x{prompt.height}")
             print(f"[SD WebUI] Prompt: {prompt.positive[:100]}...")
-            
+
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 # Generate image
                 async with session.post(
@@ -74,38 +75,41 @@ class SDWebUIClient:
                         error = await resp.text()
                         print(f"[SD WebUI] Generation failed: {resp.status} - {error[:200]}")
                         return None
-                    
+
                     data = await resp.json()
                     images = data.get("images", [])
-                    
+
                     if not images:
                         print("[SD WebUI] No images returned")
                         return None
-                    
+
                     # Save image
                     import base64
                     img_data = base64.b64decode(images[0])
-                    
+
                     if save_dir is None:
                         save_dir = Path("storage/images")
                     save_dir = save_dir.resolve()  # Convert to absolute path
                     save_dir.mkdir(parents=True, exist_ok=True)
-                    
+
                     path = save_dir / f"{character_name}_{int(time.time())}.png"
-                    
+
                     async with aiofiles.open(path, "wb") as f:
                         await f.write(img_data)
-                    
+
                     print(f"[SD WebUI] Saved: {path}")
                     return path.resolve()  # Return absolute path
-                    
+
         except Exception as e:
+            # FIX: Stampa il TIPO di errore, così capiamo subito se è Timeout o Connection Refused
+            import traceback
+            print(f"[SD WebUI] Exception Type: {type(e).__name__}")
             print(f"[SD WebUI] Error: {e}")
             return None
-    
+
     async def check_available(self) -> bool:
         """Check if SD WebUI is running.
-        
+
         Returns:
             True if available
         """
