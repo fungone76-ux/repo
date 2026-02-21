@@ -58,6 +58,7 @@ class StateManager:
         world_id: str,
         companion: str,
         companions_list: List[str],
+        player_character: Optional[Dict[str, Any]] = None,
     ) -> GameState:
         """Create new game session.
         
@@ -66,6 +67,7 @@ class StateManager:
             world_id: World identifier
             companion: Starting companion name
             companions_list: List of all available companions
+            player_character: Optional player character config from world
             
         Returns:
             New game state
@@ -81,13 +83,28 @@ class StateManager:
             affinity=affinity,
         )
         
+        # Build player state from world config or use defaults
+        player_config = player_character or {}
+        identity = player_config.get("identity", {})
+        starting_stats = player_config.get("starting_stats", {})
+        
+        player = PlayerState(
+            name=identity.get("name", "Protagonist"),
+            age=identity.get("age", 18),
+            background=identity.get("background", "New student"),
+            strength=starting_stats.get("strength", 10),
+            mind=starting_stats.get("mind", 10),
+            charisma=starting_stats.get("charisma", 10),
+            gold=starting_stats.get("gold", 0),
+        )
+        
         # Create game state
         state = GameState(
             session_id=session_model.id,
             world_id=world_id,
             active_companion=companion,
             companion_outfit="default",
-            player=PlayerState(),
+            player=player,
             affinity=affinity,
             npc_states={},
             active_quests=[],
@@ -144,9 +161,9 @@ class StateManager:
             player=player,
             npc_states=npc_states,
             affinity=session_model.affinity or {},
-            quest_flags=session_model.flags or {},
+            flags=session_model.flags or {},
         )
-
+        
         # Load quest states
         quest_models = await self.db.get_all_quest_states(db, session_id)
         for qm in quest_models:
@@ -154,36 +171,36 @@ class StateManager:
                 state.active_quests.append(qm.quest_id)
             elif qm.status == QuestStatus.COMPLETED.value:
                 state.completed_quests.append(qm.quest_id)
-
+        
         self._current = state
         return state
-
+    
     async def save(self, db: AsyncSession) -> bool:
         """Save current game state.
-
+        
         Args:
             db: Database session
-
+            
         Returns:
             True if saved successfully
         """
         if not self._current:
             return False
-
+        
         state = self._current
-
+        
         # Serialize NPC states
         npc_data = {
-            name: npc.model_dump(exclude={"name"})
+            name: npc.model_dump(exclude={"name"}) 
             for name, npc in state.npc_states.items()
         }
-
+        
         # Serialize outfit states
         outfit_data = {
-            name: outfit.model_dump()
+            name: outfit.model_dump() 
             for name, outfit in state.companion_outfits.items()
         }
-
+        
         # Update database
         updated = await self.db.update_session(
             db=db,
@@ -197,85 +214,93 @@ class StateManager:
             player_state=state.player.model_dump(),
             npc_states=npc_data,
             affinity=state.affinity,
-            flags=state.quest_flags,
+            flags=state.flags,
         )
-
+        
         return updated
-
+    
     # =========================================================================
     # State Operations
     # =========================================================================
-
+    
     def advance_turn(self) -> int:
         """Increment turn counter.
-
+        
         Returns:
             New turn number
         """
         self.current.turn_count += 1
         return self.current.turn_count
-
+    
     def set_time(self, time_of_day: TimeOfDay) -> None:
         """Set time of day.
-
+        
         Args:
             time_of_day: New time period
         """
         self.current.time_of_day = time_of_day
-
+    
     def advance_time(self) -> TimeOfDay:
         """Advance to next time period.
-
+        
         Returns:
             New time of day
         """
         times = list(TimeOfDay)
-        current_idx = times.index(self.current.time_of_day)
+        
+        # Ensure time_of_day is an enum (handle string from DB/JSON)
+        current_time = self.current.time_of_day
+        if isinstance(current_time, str):
+            try:
+                current_time = TimeOfDay(current_time)
+            except ValueError:
+                current_time = TimeOfDay.MORNING
+        
+        current_idx = times.index(current_time)
         next_idx = (current_idx + 1) % len(times)
         self.current.time_of_day = times[next_idx]
         return self.current.time_of_day
-
+    
     def set_location(self, location: str) -> None:
         """Set current location.
-
+        
         Args:
             location: Location identifier
         """
         self.current.current_location = location
-
+    
     def switch_companion(self, companion: str, outfit: Optional[str] = None) -> bool:
         """Switch active companion.
-
+        
         Args:
             companion: New companion name
             outfit: Optional outfit style to set (uses existing or default)
-
+            
         Returns:
             True if switched (companion exists in affinity)
         """
         if companion not in self.current.affinity:
             return False
-
+        
         self.current.active_companion = companion
-
-        # Sincronizza il campo legacy per il database
-        current_outfit = self.current.get_outfit()
-        self.current.companion_outfit = current_outfit.style
-
+        
         # If outfit specified, update it
         if outfit:
             self.set_outfit_style(outfit)
-
+        
         return True
-
+    
     def set_outfit(self, outfit: str) -> None:
         """Set outfit for active companion (legacy - sets style only).
-
+        
         Args:
             outfit: Outfit style identifier
         """
-        self.set_outfit_style(outfit)
-
+        self.current.companion_outfit = outfit
+        # Also update structured outfit if exists
+        current_outfit = self.current.get_outfit()
+        current_outfit.style = outfit
+    
     def set_outfit_full(
         self,
         style: str,
@@ -284,7 +309,7 @@ class StateManager:
         is_special: bool = False,
     ) -> None:
         """Set complete outfit state for active companion.
-
+        
         Args:
             style: Outfit style (casual, formal, etc)
             description: Full outfit description
@@ -292,7 +317,7 @@ class StateManager:
             is_special: If this is a special state (towel, etc)
         """
         from luna.core.models import OutfitState
-
+        
         outfit = OutfitState(
             style=style,
             description=description,
@@ -301,23 +326,21 @@ class StateManager:
             is_special=is_special,
         )
         self.current.set_outfit(outfit)
-        self.current.companion_outfit = style
-
+    
     def set_outfit_style(self, style: str) -> None:
         """Set outfit style (triggers new outfit generation).
-
+        
         Args:
             style: New outfit style
         """
         outfit = self.current.get_outfit()
         outfit.style = style
         outfit.last_updated_turn = self.current.turn_count
-        self.current.companion_outfit = style
         # Description will be regenerated by LLM
-
+    
     def modify_outfit_component(self, component: str, value: str) -> None:
         """Modify a single outfit component.
-
+        
         Args:
             component: Component type (shoes, top, etc)
             value: New value
@@ -325,128 +348,127 @@ class StateManager:
         outfit = self.current.get_outfit()
         outfit.set_component(component, value)
         outfit.last_updated_turn = self.current.turn_count
-
+    
     def get_outfit(self, companion: Optional[str] = None) -> Any:
         """Get outfit state for a companion.
-
+        
         Args:
             companion: Companion name (default: active)
-
+            
         Returns:
             OutfitState for the companion
         """
         name = companion or self.current.active_companion
         return self.current.get_outfit(name)
-
+    
     # =========================================================================
     # Affinity Operations
     # =========================================================================
-
+    
     def get_affinity(self, companion: str) -> int:
         """Get affinity with companion.
-
+        
         Args:
             companion: Companion name
-
+            
         Returns:
             Affinity value (0-100)
         """
         return self.current.affinity.get(companion, 0)
-
+    
     def change_affinity(
-        self,
-        companion: str,
+        self, 
+        companion: str, 
         delta: int,
         clamp: bool = True,
     ) -> int:
         """Modify affinity with companion.
-
+        
         Args:
             companion: Companion name
             delta: Change amount (positive or negative)
             clamp: If True, clamps to 0-100 range
-
+            
         Returns:
             New affinity value
         """
         current = self.current.affinity.get(companion, 0)
         new_value = current + delta
-
+        
         if clamp:
             new_value = max(0, min(100, new_value))
-
+        
         self.current.affinity[companion] = new_value
         return new_value
-
+    
     # =========================================================================
     # NPC State Operations
     # =========================================================================
-
+    
     def get_npc_state(self, name: str) -> Optional[NPCState]:
         """Get NPC state.
-
+        
         Args:
             name: NPC name
-
+            
         Returns:
             NPC state or None
         """
         return self.current.npc_states.get(name)
-
+    
     def ensure_npc_state(self, name: str) -> NPCState:
         """Get or create NPC state.
-
+        
         Args:
             name: NPC name
-
+            
         Returns:
             NPC state (existing or new)
         """
         if name not in self.current.npc_states:
             self.current.npc_states[name] = NPCState(name=name)
         return self.current.npc_states[name]
-
+    
     def update_npc_location(self, name: str, location: str) -> None:
         """Update NPC location.
-
+        
         Args:
             name: NPC name
             location: New location
         """
         npc = self.ensure_npc_state(name)
         npc.location = location
-
+    
     def update_npc_outfit(self, name: str, outfit: str) -> None:
         """Update NPC outfit.
-
+        
         Args:
             name: NPC name
             outfit: New outfit
         """
         npc = self.ensure_npc_state(name)
-        npc.outfit.style = outfit
-        npc.outfit.last_updated_turn = self.current.turn_count
-
+        npc.current_outfit = outfit
+    
     def update_npc_emotion(self, name: str, emotion: str) -> None:
         """Update NPC emotional state.
-
+        
         Args:
             name: NPC name
             emotion: Emotional state
         """
         npc = self.ensure_npc_state(name)
         npc.emotional_state = emotion
-
+    
     # =========================================================================
     # Quest Operations
     # =========================================================================
-
+    
     def start_quest(self, quest_id: str) -> bool:
         """Mark quest as active.
-
+        
         Args:
             quest_id: Quest identifier
-
+            
         Returns:
             True if started (wasn't already active)
         """
@@ -454,91 +476,91 @@ class StateManager:
             return False
         if quest_id in self.current.completed_quests:
             return False
-
+        
         self.current.active_quests.append(quest_id)
         return True
-
+    
     def complete_quest(self, quest_id: str) -> bool:
         """Mark quest as completed.
-
+        
         Args:
             quest_id: Quest identifier
-
+            
         Returns:
             True if completed (was active)
         """
         if quest_id not in self.current.active_quests:
             return False
-
+        
         self.current.active_quests.remove(quest_id)
         self.current.completed_quests.append(quest_id)
         return True
-
+    
     def fail_quest(self, quest_id: str) -> bool:
         """Mark quest as failed.
-
+        
         Args:
             quest_id: Quest identifier
-
+            
         Returns:
             True if failed (was active)
         """
         if quest_id not in self.current.active_quests:
             return False
-
+        
         self.current.active_quests.remove(quest_id)
         return True
-
+    
     def is_quest_active(self, quest_id: str) -> bool:
         """Check if quest is active.
-
+        
         Args:
             quest_id: Quest identifier
-
+            
         Returns:
             True if active
         """
         return quest_id in self.current.active_quests
-
+    
     def is_quest_completed(self, quest_id: str) -> bool:
         """Check if quest is completed.
-
+        
         Args:
             quest_id: Quest identifier
-
+            
         Returns:
             True if completed
         """
         return quest_id in self.current.completed_quests
-
+    
     def set_flag(self, key: str, value: Any = True) -> None:
         """Set quest/game flag.
-
+        
         Args:
             key: Flag name
             value: Flag value
         """
-        self.current.quest_flags[key] = value
-
+        self.current.flags[key] = value
+    
     def get_flag(self, key: str, default: Any = None) -> Any:
         """Get flag value.
-
+        
         Args:
             key: Flag name
             default: Default value if not set
-
+            
         Returns:
             Flag value or default
         """
-        return self.current.quest_flags.get(key, default)
-
+        return self.current.flags.get(key, default)
+    
     def has_flag(self, key: str) -> bool:
         """Check if flag exists and is truthy.
-
+        
         Args:
             key: Flag name
-
+            
         Returns:
             True if flag exists and is truthy
         """
-        return bool(self.current.quest_flags.get(key))
+        return bool(self.current.flags.get(key))

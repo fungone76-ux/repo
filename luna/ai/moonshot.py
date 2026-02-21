@@ -103,13 +103,16 @@ class MoonshotClient(BaseLLMClient):
         
         messages = self._build_messages(system_prompt, user_input, history)
         
-        # Try JSON mode first, then fallback to text
+        # Try JSON mode first
         if json_mode:
             try:
                 return await self._generate_json(messages)
             except Exception as e:
-                print(f"[Moonshot] JSON mode failed: {e}, trying text mode...")
+                print(f"[Moonshot] JSON mode failed: {e}")
+                # In strict JSON mode, don't fallback - raise error for retry
+                raise
         
+        # Text mode (only if json_mode=False)
         try:
             return await self._generate_text(messages)
         except Exception as e:

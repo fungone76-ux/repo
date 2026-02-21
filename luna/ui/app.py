@@ -125,10 +125,33 @@ class ApplicationRunner:
         if not result:
             return 0
         
+        # Apply execution settings from dialog
+        self._apply_execution_settings()
+        
         # Phase 2: Create and show main window, run until closed
         await self._run_main_window()
         
         return self._exit_code
+    
+    def _apply_execution_settings(self) -> None:
+        """Apply execution mode and RunPod settings from dialog selection."""
+        import os
+        from luna.core.config import reload_settings
+        
+        execution_mode = self._selection.get("execution_mode", "LOCAL")
+        runpod_id = self._selection.get("runpod_id", "")
+        
+        # Update environment variables
+        os.environ["EXECUTION_MODE"] = execution_mode
+        if runpod_id:
+            os.environ["RUNPOD_ID"] = runpod_id
+        
+        # Reload settings to pick up changes
+        reload_settings()
+        
+        print(f"[App] Execution mode set to: {execution_mode}")
+        if runpod_id:
+            print(f"[App] RunPod ID set to: {runpod_id}")
     
     async def _show_startup_dialog(self) -> bool:
         """Show startup dialog and return True if user accepted.

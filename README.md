@@ -8,8 +8,12 @@ Visual Novel/RPG AI-driven con Quest System, Personality Engine e generazione im
 - **Quest System**: State machine modulare definita in YAML
 - **Personality Engine**: Tracciamento dinamico comportamento e relazioni
 - **Living World**: NPC con schedule, tempo che scorre, eventi globali
-- **Generazione Media**: Immagini (ComfyUI/SD), Video (Wan2.1), Audio (TTS)
+- **Generazione Media**: 
+  - Immagini: SD WebUI (local) o ComfyUI (RunPod)
+  - Video: Wan2.1 I2V con temporal prompt (LLM-powered)
+  - Audio: TTS (Google Cloud + gTTS fallback)
 - **UI Moderna**: PySide6 con tema dark, widgets dinamici
+- **Chat Stile Visual Novel**: Conversazione colorata (utente=verde, NPC=rosa)
 
 ## 🚀 Setup
 
@@ -116,15 +120,44 @@ Per usare **Ollama**:
 
 ## 🖥️ Modalità di Esecuzione
 
-### Locale (SD WebUI)
-- Generazione immagini via Stable Diffusion WebUI
-- Video non disponibile
-- Ideale per testing e sviluppo
+L'app supporta due modalità selezionabili dallo Startup Dialog:
 
-### RunPod (ComfyUI)
-- Generazione immagini via ComfyUI
-- Video Wan2.1 I2V disponibile
-- Richiede account RunPod con GPU
+### LOCAL - Stable Diffusion WebUI
+- **Immagini**: Generate tramite SD WebUI (Automatic1111) locale
+- **Video**: Non disponibile
+- **Requisiti**: SD WebUI avviato con `--api` su http://127.0.0.1:7860
+- **Ideale per**: Testing, sviluppo, uso senza GPU cloud
+
+### RUNPOD - ComfyUI Cloud
+- **Immagini**: Generate tramite ComfyUI su RunPod
+- **Video**: Wan2.1 I2V disponibile (~5-7 minuti per video)
+- **Requisiti**: Account RunPod con GPU e workflow configurati
+- **Ideale per**: Qualità massima, generazione video
+
+### Switch Modalità
+1. Avvia l'app
+2. Nello Startup Dialog, tab "Settings", seleziona Execution Mode
+3. Per RUNPOD: inserisci il tuo RunPod ID
+4. Clicca "Start" - la modalità viene salvata automaticamente
+
+## 🎬 Generazione Video (RunPod)
+
+In modalità RUNPOD puoi generare video animati dall'immagine corrente:
+
+1. Clicca il pulsante **🎬 Video** nella toolbar
+2. Descrivi il movimento desiderato (es: "Elena sventola la mano sorridendo")
+3. L'LLM converte la tua descrizione in un temporal prompt:
+   ```
+   0s: Character begins waving
+   1s: Hand rises, smiling
+   2s: Waving motion peak
+   3s: Slowing down
+   4s: Returns to neutral pose
+   ```
+4. Wan2.1 I2V genera il video (~5-7 minuti)
+5. Il video viene salvato in `storage/videos/`
+
+**Nota**: La generazione video richiede molta VRAM. Usa RunPod con GPU potente (RTX 4090+).
 
 ## 🧪 Testing
 

@@ -14,8 +14,12 @@ import yaml
 
 from luna.core.models import (
     CompanionDefinition,
+    EndgameDefinition,
+    GlobalEventDefinition,
+    GlobalEventEffect,
     Location,
     LocationState,
+    MilestoneDefinition,
     NarrativeArc,
     QuestAction,
     QuestCondition,
@@ -322,6 +326,12 @@ class WorldLoader:
                     if "global_events" in file_data:
                         merged_data["global_events"].update(file_data["global_events"])
                     
+                    # Merge milestones from companion files
+                    if "milestones" in file_data:
+                        for milestone in file_data["milestones"]:
+                            if isinstance(milestone, dict) and "id" in milestone:
+                                merged_data["milestones"][milestone["id"]] = milestone
+                    
                 except Exception as e:
                     print(f"Warning: Error loading {yaml_file.name}: {e}")
             
@@ -435,6 +445,69 @@ class WorldLoader:
         # Get gameplay systems config
         gameplay_systems = data.get("gameplay_systems", {})
         
+        # Process milestones (from companion files)
+        milestones = {}
+        for ms_id, ms_data in data.get("milestones", {}).items():
+            try:
+                milestones[ms_id] = MilestoneDefinition(
+                    id=ms_id,
+                    name=ms_data.get("name", ms_id),
+                    description=ms_data.get("description", ""),
+                    icon=ms_data.get("icon", ""),
+                    condition=ms_data.get("condition", {}),
+                )
+            except Exception as e:
+                print(f"Warning: Error processing milestone {ms_id}: {e}")
+        
+        # Process endgame
+        endgame_data = data.get("endgame")
+        endgame = None
+        if endgame_data:
+            try:
+                from luna.core.models import EndgameCondition
+                conditions = []
+                for cond in endgame_data.get("victory_conditions", []):
+                    conditions.append(EndgameCondition(**cond))
+                endgame = EndgameDefinition(
+                    description=endgame_data.get("description", ""),
+                    victory_conditions=conditions,
+                )
+            except Exception as e:
+                print(f"Warning: Error processing endgame: {e}")
+        
+        # Process global events
+        global_events = {}
+        for evt_id, evt_data in data.get("global_events", {}).items():
+            try:
+                effects_data = evt_data.get("effects", {})
+                effects = GlobalEventEffect(
+                    duration=effects_data.get("duration", 3),
+                    location_modifiers=effects_data.get("location_modifiers", []),
+                    visual_tags=effects_data.get("visual_tags", []),
+                    atmosphere_change=effects_data.get("atmosphere_change", ""),
+                    affinity_multiplier=effects_data.get("affinity_multiplier", 1.0),
+                    on_start=effects_data.get("on_start", []),
+                    on_end=effects_data.get("on_end", []),
+                )
+                
+                trigger = evt_data.get("trigger", {})
+                global_events[evt_id] = GlobalEventDefinition(
+                    id=evt_id,
+                    title=evt_data.get("meta", {}).get("title", evt_id),
+                    description=evt_data.get("meta", {}).get("description", ""),
+                    trigger_type=trigger.get("type", "random"),
+                    trigger_chance=trigger.get("chance", 0.1),
+                    trigger_conditions=trigger.get("conditions", []),
+                    allowed_times=trigger.get("allowed_times", []),
+                    effects=effects,
+                    narrative_prompt=evt_data.get("narrative_prompt", ""),
+                )
+            except Exception as e:
+                print(f"Warning: Error processing global event {evt_id}: {e}")
+        
+        # Get player character config
+        player_character = data.get("player_character", {})
+        
         # Build world definition
         return WorldDefinition(
             id=meta.get("id", world_id),
@@ -450,6 +523,10 @@ class WorldLoader:
             gameplay_systems=gameplay_systems,
             female_hints=data.get("npc_logic", {}).get("female_hints", []),
             male_hints=data.get("npc_logic", {}).get("male_hints", []),
+            milestones=milestones,
+            endgame=endgame,
+            global_events=global_events,
+            player_character=player_character,
         )
     
     def _process_companion(self, name: str, data: Dict[str, Any]) -> CompanionDefinition:

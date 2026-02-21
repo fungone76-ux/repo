@@ -71,7 +71,15 @@ class VideoClient:
             return None
         
         try:
-            # 1. Generate temporal prompt from user action
+            # 1. Upload image to RunPod first!
+            print(f"[Video] Uploading image to RunPod...")
+            uploaded_filename = await self._upload_image(comfy_url, image_path)
+            if not uploaded_filename:
+                print("[Video] Failed to upload image")
+                return None
+            print(f"[Video] Image uploaded: {uploaded_filename}")
+            
+            # 2. Generate temporal prompt from user action
             print(f"[Video] Generating temporal prompt from: '{user_action}'")
             temporal_prompt = await self._build_temporal_prompt(
                 user_action=user_action,
@@ -84,31 +92,31 @@ class VideoClient:
             
             print(f"[Video] Temporal prompt:\n{temporal_prompt}")
             
-            # 2. Manage VRAM (unload image models)
+            # 3. Manage VRAM (unload image models)
             await self._unload_image_models(comfy_url)
             
-            # 3. Load and patch workflow
+            # 4. Load and patch workflow
             workflow = await self._load_workflow()
             self._patch_workflow(
                 workflow=workflow,
-                image_path=image_path,
+                image_filename=uploaded_filename,  # Use uploaded filename only
                 temporal_prompt=temporal_prompt,
                 character_name=character_name,
             )
             
-            # 4. Submit to Wan2.1
+            # 5. Submit to Wan2.1
             print(f"[Video] Submitting to Wan2.1...")
             prompt_id = await self._submit_workflow(comfy_url, workflow)
             if not prompt_id:
                 return None
             
-            # 5. Wait with longer timeout (7 min DND mode)
+            # 6. Wait with longer timeout (7 min DND mode)
             print("[Video] Generating... (this takes ~5-7 minutes)")
             video_path = await self._wait_and_download(
                 comfy_url, prompt_id, character_name, save_dir
             )
             
-            # 6. Cleanup VRAM
+            # 7. Cleanup VRAM
             await self._cleanup_vram(comfy_url)
             
             return video_path
@@ -116,6 +124,51 @@ class VideoClient:
         except Exception as e:
             print(f"[Video] Error: {e}")
             return None
+    
+    async def _upload_image(
+        self,
+        comfy_url: str,
+        image_path: Path,
+    ) -> Optional[str]:
+        """Upload image to RunPod ComfyUI.
+        
+        Args:
+            comfy_url: ComfyUI URL
+            image_path: Local image path
+            
+        Returns:
+            Uploaded filename or None
+        """
+        try:
+            # Read image file
+            async with aiofiles.open(image_path, "rb") as f:
+                image_data = await f.read()
+            
+            filename = image_path.name
+            
+            async with aiohttp.ClientSession() as session:
+                # Upload via ComfyUI API
+                form = aiohttp.FormData()
+                form.add_field("image", image_data, filename=filename, content_type="image/png")
+                
+                async with session.post(
+                    f"{comfy_url}/upload/image",
+                    data=form
+                ) as resp:
+                    if resp.status in (200, 201):
+                        data = await resp.json()
+                        # Return the name ComfyUI assigned
+                        return data.get("name", filename)
+                    else:
+                        error = await resp.text()
+                        print(f"[Video] Upload failed: {resp.status} - {error[:200]}")
+                        # Fallback: return original filename
+                        return filename
+                        
+        except Exception as e:
+            print(f"[Video] Upload error: {e}")
+            # Fallback: try with original filename
+            return image_path.name
     
     async def _build_temporal_prompt(
         self,
@@ -246,7 +299,7 @@ Output:
     def _patch_workflow(
         self,
         workflow: Dict[str, Any],
-        image_path: Path,
+        image_filename: str,
         temporal_prompt: str,
         character_name: str,
     ) -> None:
@@ -254,7 +307,7 @@ Output:
         
         Args:
             workflow: Workflow dict
-            image_path: Source image path
+            image_filename: Uploaded image filename (not path!)
             temporal_prompt: Temporal motion description
             character_name: Character name
         """
@@ -266,16 +319,24 @@ Output:
             inputs = node.get("inputs", {})
             class_type = node.get("class_type", "")
             
-            # Load image node
-            if "LoadImage" in class_type or "image" in inputs:
-                if "image" in inputs:
-                    inputs["image"] = str(image_path)
+            # Load image node - use filename only (not full path)
+            if class_type == "LoadImage" and "image" in inputs:
+                inputs["image"] = image_filename
+                print(f"[Video] Set image to: {image_filename}")
             
-            # Text prompt node (temporal)
-            if "CLIPTextEncode" in class_type or "text" in inputs:
-                if "motion" in str(inputs.get("text", "")).lower() or \
-                   "0s:" in str(inputs.get("text", "")):
+            # Text prompt node (temporal) - detect positive prompt node
+            # Positive prompt is typically longer and contains scene description
+            if class_type == "CLIPTextEncode" and "text" in inputs:
+                text = str(inputs.get("text", ""))
+                # Positive prompt: long, descriptive, contains video/scene words
+                # Negative prompt: shorter, contains "bad", "poor", "deformed"
+                is_negative = any(word in text.lower() for word in 
+                    ["deformed", "bad anatomy", "poor quality", "ugly", "distorted"])
+                is_positive = len(text) > 100 and not is_negative
+                
+                if is_positive or "0s:" in text or "motion" in text.lower():
                     inputs["text"] = temporal_prompt
+                    print(f"[Video] Set temporal prompt ({len(temporal_prompt)} chars)")
             
             # Wan2.1 specific settings
             if "Wan" in class_type:
@@ -291,13 +352,16 @@ Output:
             if "seed" in inputs:
                 inputs["seed"] = int(time.time()) % 1000000000
         
-        # Filename prefix
+        # Filename prefix (VHS_VideoCombine or SaveImage/VideoSave)
         for node_id, node in workflow.items():
-            if node.get("class_type", "").startswith("SaveImage") or \
-               node.get("class_type", "").startswith("VideoSave"):
+            class_type = node.get("class_type", "")
+            if class_type.startswith("SaveImage") or \
+               class_type.startswith("VideoSave") or \
+               class_type == "VHS_VideoCombine":
                 if "filename_prefix" in node.get("inputs", {}):
                     prefix = character_name or "video"
                     node["inputs"]["filename_prefix"] = f"{prefix}_Wan2.1"
+                    print(f"[Video] Set filename prefix to: {prefix}_Wan2.1")
     
     async def _submit_workflow(
         self,
@@ -365,21 +429,33 @@ Output:
                             outputs = data.get(prompt_id, {}).get("outputs", {})
                             
                             if outputs:
-                                print("[Video] Generation complete!")
+                                print(f"[Video] Generation complete! Outputs: {list(outputs.keys())}")
                                 
-                                # Download video
+                                # Download video - handle different output formats
                                 for nid, node in outputs.items():
-                                    files = node.get("files", []) or node.get("images", [])
+                                    print(f"[Video] Checking node {nid}: {node.keys() if isinstance(node, dict) else 'not dict'}")
+                                    
+                                    # Try different output formats
+                                    files = []
+                                    if isinstance(node, dict):
+                                        files = node.get("files", []) or node.get("images", []) or node.get("gifs", [])
+                                    
                                     for f in files:
                                         fname = f.get("filename", "") if isinstance(f, dict) else f
-                                        if fname.endswith((".mp4", ".webm", ".gif")):
+                                        print(f"[Video] Found file: {fname}")
+                                        if fname.endswith((".mp4", ".webm", ".gif", ".mov")):
+                                            print(f"[Video] Downloading: {fname}")
                                             return await self._download_video(
                                                 session, comfy_url, fname, character, save_dir
                                             )
+                                
+                                print("[Video] No video file found in outputs!")
                                 return None
                                 
                 except Exception as e:
                     print(f"[!] Poll error: {e}")
+                    import traceback
+                    traceback.print_exc()
                     continue
             
             print("[Video] Timeout - generation may still be processing")

@@ -230,7 +230,7 @@ class ImagePrompt:
     height: int = 1152
     steps: int = 24
     cfg_scale: float = 7.0
-    sampler: str = "DPM++ 2M Karras"
+    sampler: str = "dpmpp_2m"  # ComfyUI format, not A1111
     seed: Optional[int] = None
     composition: str = "medium_shot"
     lora_stack: List[Dict[str, Any]] = None
@@ -499,7 +499,7 @@ class MultiCharacterBuilder(BasePromptBuilder):
             visual_description: Scene description
             tags: SD tags
             scene_analysis: Scene analysis
-            characters: List of dicts with 'name', 'position', 'outfit'
+            characters: List of dicts with 'name', 'position', 'outfit', 'base_prompt'
             
         Returns:
             Image prompt
@@ -515,8 +515,8 @@ class MultiCharacterBuilder(BasePromptBuilder):
             position = char_data.get("position", "")
             outfit = char_data.get("outfit", "")
             
-            # Get base prompt for this character
-            char_base = self.base_prompts.get(name, NPC_BASE)
+            # Get base prompt: prefer explicit base_prompt from char_data, then fall back to dict
+            char_base = char_data.get("base_prompt") or self.base_prompts.get(name, NPC_BASE)
             
             # ENHANCED: Individual character section with strong separation
             section_parts = [f"[[Character {i+1}: {name}]]"]
@@ -723,10 +723,13 @@ class ImagePromptBuilder:
         outfit: Optional[Any] = None,
         width: int = 896,
         height: int = 1152,
+        base_prompt: Optional[str] = None,
+        secondary_characters: Optional[List[Dict[str, str]]] = None,
     ) -> ImagePrompt:
         """Build image prompt from basic parameters.
         
         Uses BASE_PROMPTS for character-specific LoRAs and quality tags.
+        Supports multi-character scenes when secondary_characters is provided.
         
         Args:
             visual_description: Visual description text
@@ -736,12 +739,57 @@ class ImagePromptBuilder:
             outfit: Optional outfit state
             width: Image width
             height: Image height
+            base_prompt: Optional explicit base prompt (from world YAML). If provided, overrides BASE_PROMPTS.
+            secondary_characters: Optional list of secondary characters [{'name': 'X', 'base_prompt': 'Y'}]
             
         Returns:
             ImagePrompt ready for generation
         """
+        # Check if multi-character scene
+        if secondary_characters and len(secondary_characters) > 0:
+            # Use MultiCharacterBuilder for multi-character scenes
+            multi_builder = MultiCharacterBuilder()
+            
+            # Build characters list with primary + secondaries
+            # Use the format expected by MultiCharacterBuilder
+            characters = []
+            
+            # Primary character (center position)
+            primary_outfit = outfit.style if outfit else ""
+            characters.append({
+                'name': character_name,
+                'position': 'center',
+                'outfit': primary_outfit,
+            })
+            
+            # Secondary characters (alternate left/right)
+            positions = ['left', 'right']
+            for i, char_data in enumerate(secondary_characters):
+                char_name = char_data.get('name', '')
+                char_outfit = char_data.get('outfit', '')
+                position = positions[i % len(positions)]
+                characters.append({
+                    'name': char_name,
+                    'position': position,
+                    'outfit': char_outfit,
+                })
+            
+            # Build multi-character prompt using the builder
+            return multi_builder.build_prompt(
+                visual_description=visual_description,
+                tags=tags,
+                characters=characters,
+                width=width,
+                height=height,
+            )
+        
+        # Single character - use original logic
         # Get character-specific base prompt (SACRED - defines visual style)
-        character_base = BASE_PROMPTS.get(character_name, NPC_BASE)
+        # Priority: 1) Explicit base_prompt parameter, 2) BASE_PROMPTS dict, 3) NPC_BASE fallback
+        if base_prompt:
+            character_base = base_prompt
+        else:
+            character_base = BASE_PROMPTS.get(character_name, NPC_BASE)
         
         # Build positive prompt - BASE_PROMPTS first (LoRAs must be at start)
         positive_parts = [

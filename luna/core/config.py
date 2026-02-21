@@ -383,6 +383,24 @@ class UserPreferences:
     @window_geometry.setter
     def window_geometry(self, value: Dict[str, int]) -> None:
         self.set("window_geometry", value)
+    
+    @property
+    def execution_mode(self) -> str:
+        """Execution mode (LOCAL or RUNPOD)."""
+        return self.get("execution_mode", "LOCAL")
+    
+    @execution_mode.setter
+    def execution_mode(self, value: str) -> None:
+        self.set("execution_mode", value.upper())
+    
+    @property
+    def runpod_id(self) -> Optional[str]:
+        """Saved RunPod ID."""
+        return self.get("runpod_id")
+    
+    @runpod_id.setter
+    def runpod_id(self, value: str) -> None:
+        self.set("runpod_id", value)
 
 
 # =========================================================================

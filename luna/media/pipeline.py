@@ -74,6 +74,8 @@ class MediaPipeline:
         outfit: Optional[OutfitState] = None,
         generate_video: bool = False,
         video_action: str = "posing",
+        base_prompt: Optional[str] = None,
+        secondary_characters: Optional[List[Dict[str, str]]] = None,
     ) -> MediaResult:
         """Generate all media types asynchronously.
         
@@ -84,6 +86,8 @@ class MediaPipeline:
             companion_name: For character-specific settings
             generate_video: Whether to generate video
             video_action: Action for video generation
+            base_prompt: Character base prompt from world YAML (SACRED for visual consistency)
+            secondary_characters: Optional list of secondary characters with 'name' and 'base_prompt'
             
         Returns:
             Media result (paths may be None if async)
@@ -95,7 +99,7 @@ class MediaPipeline:
         
         # Image (always)
         image_task = asyncio.create_task(
-            self._generate_image_async(visual_en, tags, companion_name, outfit)
+            self._generate_image_async(visual_en, tags, companion_name, outfit, base_prompt, secondary_characters)
         )
         tasks.append(("image", image_task))
         
@@ -161,6 +165,8 @@ class MediaPipeline:
         tags: List[str],
         companion_name: str,
         outfit: Optional[OutfitState] = None,
+        base_prompt: Optional[str] = None,
+        secondary_characters: Optional[List[Dict[str, str]]] = None,
     ) -> Optional[str]:
         """Generate image asynchronously.
         
@@ -169,6 +175,8 @@ class MediaPipeline:
             tags: SD tags
             companion_name: Character name
             outfit: Character outfit state
+            base_prompt: Character base prompt from world YAML (SACRED)
+            secondary_characters: Optional list of secondary characters for multi-character scenes
             
         Returns:
             Path to generated image or None
@@ -196,6 +204,8 @@ class MediaPipeline:
                 composition="medium_shot",
                 character_name=companion_name,
                 outfit=outfit,
+                base_prompt=base_prompt,  # Pass the SACRED base prompt from world YAML
+                secondary_characters=secondary_characters,  # Multi-character support
             )
             
             # Generate image

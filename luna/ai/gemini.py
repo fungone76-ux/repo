@@ -158,8 +158,13 @@ class GeminiClient(BaseLLMClient):
                 if not response.text:
                     continue
                 
-                # Parse response
-                return self._parse_response(response.text, model)
+                # Parse response with strict JSON validation when json_mode=True
+                parsed = self._parse_response(response.text, model, strict_json=json_mode)
+                if parsed is None and json_mode:
+                    # JSON parsing failed in strict mode - retry with this model
+                    print(f"[Gemini] {model} returned invalid JSON, retrying...")
+                    continue
+                return parsed
                 
             except Exception as e:
                 last_error = e
@@ -202,15 +207,21 @@ class GeminiClient(BaseLLMClient):
         
         return contents
     
-    def _parse_response(self, text: str, model_used: str) -> LLMResponse:
+    def _parse_response(
+        self, 
+        text: str, 
+        model_used: str,
+        strict_json: bool = False,
+    ) -> Optional[LLMResponse]:
         """Parse Gemini response to LLMResponse.
         
         Args:
             text: Raw response text
             model_used: Which model generated this
+            strict_json: If True, returns None on JSON parse failure instead of fallback
             
         Returns:
-            Parsed LLMResponse
+            Parsed LLMResponse, or None if strict_json=True and parsing fails
         """
         try:
             # Try JSON parsing
@@ -221,6 +232,9 @@ class GeminiClient(BaseLLMClient):
                 print(f"[Gemini] Warning: Response is a list, expected dict. Using first item.")
                 if len(data) > 0 and isinstance(data[0], dict):
                     data = data[0]
+                elif strict_json:
+                    print(f"[Gemini] Strict JSON: Response is empty list, rejecting")
+                    return None
                 else:
                     # Wrap list as text
                     return LLMResponse(
@@ -234,6 +248,8 @@ class GeminiClient(BaseLLMClient):
             # Ensure data is a dict
             if not isinstance(data, dict):
                 print(f"[Gemini] Warning: Response is {type(data).__name__}, expected dict")
+                if strict_json:
+                    return None
                 return LLMResponse(
                     text=str(data),
                     visual_en="",
@@ -258,8 +274,11 @@ class GeminiClient(BaseLLMClient):
                 provider=f"{self.provider_name}/{model_used}",
             )
             
-        except json.JSONDecodeError:
-            # Not JSON - treat as plain text
+        except json.JSONDecodeError as e:
+            if strict_json:
+                print(f"[Gemini] Strict JSON: Parse failed - {e}")
+                return None
+            # Not JSON - treat as plain text (fallback mode)
             return LLMResponse(
                 text=text,
                 visual_en="",
@@ -270,6 +289,8 @@ class GeminiClient(BaseLLMClient):
         except Exception as e:
             print(f"[Gemini] Parse error: {e}")
             print(f"[Gemini] Raw text: {text[:500]}")
+            if strict_json:
+                return None
             # Return as plain text on any parse error
             return LLMResponse(
                 text=text,

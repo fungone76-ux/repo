@@ -209,46 +209,85 @@ class GlobalEventWidget(QGroupBox):
 
 
 class StoryLogWidget(QGroupBox):
-    """Widget for displaying story text."""
+    """Widget for displaying story text with auto-scroll."""
 
     def __init__(self, parent=None) -> None:
         """Initialize story log."""
         super().__init__("📖 Story", parent)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
 
         # Scroll area for story
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("border: none; background: transparent;")
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("border: none; background: transparent;")
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         self.lbl_story = QLabel("Welcome to Luna RPG v4...")
         self.lbl_story.setWordWrap(True)
+        self.lbl_story.setTextFormat(Qt.RichText)  # Enable HTML formatting
         self.lbl_story.setStyleSheet("""
             color: #ddd;
-            font-size: 13px;
+            font-size: 15px;
             line-height: 1.5;
             padding: 10px;
         """)
         self.lbl_story.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
-        scroll.setWidget(self.lbl_story)
-        layout.addWidget(scroll)
+        self.scroll.setWidget(self.lbl_story)
+        layout.addWidget(self.scroll)
+        
+        # Enable wheel events for scrolling
+        self.scroll.setFocusPolicy(Qt.StrongFocus)
+
+    def scroll_to_bottom(self) -> None:
+        """Scroll to the bottom of the story."""
+        # Use QTimer to ensure layout is updated before scrolling
+        from PySide6.QtCore import QTimer
+        
+        def do_scroll():
+            scrollbar = self.scroll.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        
+        # Multiple delays to ensure it works
+        QTimer.singleShot(10, do_scroll)
+        QTimer.singleShot(50, do_scroll)
+        QTimer.singleShot(100, do_scroll)
 
     def append_text(self, text: str) -> None:
         """Append text to story."""
         current = self.lbl_story.text()
         self.lbl_story.setText(f"{current}\n\n{text}")
+        self.scroll_to_bottom()
 
     def append_system_message(self, text: str) -> None:
         """Append system message (time change, etc)."""
         current = self.lbl_story.text()
         formatted = f'<span style="color: #888; font-style: italic;">[{text}]</span>'
         self.lbl_story.setText(f"{current}\n\n{formatted}")
+        self.scroll_to_bottom()
+
+    def append_user_message(self, text: str) -> None:
+        """Append user message (chat style)."""
+        current = self.lbl_story.text()
+        formatted = f'<div style="color: #4CAF50; font-weight: bold; margin: 10px 0;">👤 You: <span style="color: #ddd; font-weight: normal;">{text}</span></div>'
+        self.lbl_story.setText(f"{current}\n{formatted}")
+        self.scroll_to_bottom()
+
+    def append_character_message(self, text: str, character_name: str = "Narrator") -> None:
+        """Append character/narrator message (chat style)."""
+        current = self.lbl_story.text()
+        icon = "🎭" if character_name == "Narrator" else "👤"
+        formatted = f'<div style="color: #E91E63; font-weight: bold; margin: 10px 0;">{icon} {character_name}: <span style="color: #fff; font-weight: normal;">{text}</span></div>'
+        self.lbl_story.setText(f"{current}\n{formatted}")
+        self.scroll_to_bottom()
 
     def set_text(self, text: str) -> None:
         """Set story text."""
         self.lbl_story.setText(text)
+        self.scroll_to_bottom()
 
 
 class ImageDisplayWidget(QGroupBox):

@@ -218,6 +218,9 @@ class GameState(LunaBaseModel):
     completed_quests: List[str] = Field(default_factory=list)
     quest_flags: Dict[str, Any] = Field(default_factory=dict)
     
+    # General flags (used by story director, quests, location system)
+    flags: Dict[str, Any] = Field(default_factory=dict)
+    
     # Metadata
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -252,17 +255,7 @@ class GameState(LunaBaseModel):
         outfit = self.get_outfit()
         return outfit.to_prompt_string()
 
-    # ========================================================================
-    # FIX ASSOLUTO: Ponte per la retrocompatibilità di `flags`
-    # ========================================================================
-    @property
-    def flags(self) -> Dict[str, Any]:
-        """Ponte di sicurezza: se un vecchio file chiede .flags, restituisce .quest_flags."""
-        return self.quest_flags
 
-    @flags.setter
-    def flags(self, value: Dict[str, Any]) -> None:
-        self.quest_flags = value
 # =============================================================================
 # LLM Response Models
 # =============================================================================
@@ -337,6 +330,12 @@ class LLMResponse(LunaBaseModel):
     tags_en: List[str] = Field(default_factory=list, description="SD tags for image generation")
     body_focus: Optional[str] = Field(default=None, description="Body part in focus")
     
+    # Multi-character support
+    secondary_characters: List[str] = Field(
+        default_factory=list, 
+        description="Other characters visible in the scene (besides active companion)"
+    )
+    
     # Technical - accept both enum and string
     approach_used: str = Field(default="standard")
     composition: str = Field(default="medium_shot")
@@ -347,6 +346,11 @@ class LLMResponse(LunaBaseModel):
     # Metadata
     raw_response: Optional[str] = Field(default=None, exclude=True)
     provider: Optional[str] = Field(default=None, exclude=True)
+    
+    @property
+    def is_multi_character(self) -> bool:
+        """True if scene has multiple characters."""
+        return len(self.secondary_characters) > 0
 
 
 class SceneAnalysis(LunaBaseModel):
@@ -854,6 +858,58 @@ class NarrativeArc(LunaBaseModel):
     )
 
 
+class MilestoneDefinition(LunaBaseModel):
+    """Milestone/achievement definition for a world."""
+    
+    id: str
+    name: str
+    description: str = ""
+    icon: str = ""
+    condition: Dict[str, Any] = Field(default_factory=dict)
+    """Condition dict with keys like 'affinity', 'flag', etc."""
+
+
+class EndgameCondition(LunaBaseModel):
+    """Single endgame victory condition."""
+    
+    type: str = "companion_conquered"
+    target: str
+    requires: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class EndgameDefinition(LunaBaseModel):
+    """Endgame/victory conditions for a world."""
+    
+    description: str = ""
+    victory_conditions: List[EndgameCondition] = Field(default_factory=list)
+
+
+class GlobalEventEffect(LunaBaseModel):
+    """Effect of a global event."""
+    
+    duration: int = Field(default=3, ge=1)
+    location_modifiers: List[Dict[str, Any]] = Field(default_factory=list)
+    visual_tags: List[str] = Field(default_factory=list)
+    atmosphere_change: str = ""
+    affinity_multiplier: float = Field(default=1.0, ge=0.0)
+    on_start: List[Dict[str, Any]] = Field(default_factory=list)
+    on_end: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class GlobalEventDefinition(LunaBaseModel):
+    """Global event definition (weather, situations, etc)."""
+    
+    id: str
+    title: str = ""
+    description: str = ""
+    trigger_type: str = "random"  # random, conditional
+    trigger_chance: float = Field(default=0.1, ge=0.0, le=1.0)
+    trigger_conditions: List[Dict[str, Any]] = Field(default_factory=list)
+    allowed_times: List[str] = Field(default_factory=list)
+    effects: GlobalEventEffect = Field(default_factory=GlobalEventEffect)
+    narrative_prompt: str = ""
+
+
 class WorldDefinition(LunaBaseModel):
     """Complete world definition."""
     
@@ -880,6 +936,18 @@ class WorldDefinition(LunaBaseModel):
     # NPC detection
     female_hints: List[str] = Field(default_factory=list)
     male_hints: List[str] = Field(default_factory=list)
+    
+    # Milestones/achievements
+    milestones: Dict[str, MilestoneDefinition] = Field(default_factory=dict)
+    
+    # Endgame conditions
+    endgame: Optional[EndgameDefinition] = None
+    
+    # Global events
+    global_events: Dict[str, GlobalEventDefinition] = Field(default_factory=dict)
+    
+    # Player character default stats
+    player_character: Dict[str, Any] = Field(default_factory=dict)
 
 
 # =============================================================================

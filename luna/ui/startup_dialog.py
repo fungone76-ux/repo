@@ -352,8 +352,25 @@ class StartupDialog(QDialog):
         elif current_tab == 2:  # Settings only
             self._save_settings()
             return
+        
+        # Save execution mode and RunPod ID
+        self._save_execution_settings()
 
         self.accept()
+    
+    def _save_execution_settings(self) -> None:
+        """Save execution mode and RunPod settings."""
+        # Save to user preferences
+        execution_mode = self.combo_mode.currentText()
+        self.user_prefs.execution_mode = execution_mode
+        
+        runpod_id = self.edit_runpod_id.text().strip()
+        if runpod_id:
+            self.user_prefs.runpod_id = runpod_id
+        
+        print(f"[StartupDialog] Saved execution mode: {execution_mode}")
+        if runpod_id:
+            print(f"[StartupDialog] Saved RunPod ID: {runpod_id}")
 
     def _save_settings(self) -> None:
         """Save settings."""
@@ -371,4 +388,6 @@ class StartupDialog(QDialog):
             "world_id": self.selected_world_id,
             "companion": self.selected_companion,
             "session_id": self.selected_session_id,
+            "execution_mode": self.combo_mode.currentText(),
+            "runpod_id": self.edit_runpod_id.text().strip(),
         }
