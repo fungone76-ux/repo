@@ -4,6 +4,7 @@ Integrates startup dialog and main window.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import sys
 from pathlib import Path
@@ -19,6 +20,21 @@ from luna.ui.main_window import MainWindow
 
 def main() -> int:
     """Entry point."""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Luna RPG v4")
+    parser.add_argument(
+        "--no-media", 
+        action="store_true",
+        help="Debug mode: disable image/video generation (no ComfyUI connection)"
+    )
+    args = parser.parse_args()
+    
+    # Set debug mode environment variable
+    if args.no_media:
+        import os
+        os.environ["LUNA_DEBUG_NO_MEDIA"] = "1"
+        print("[App] DEBUG MODE: Media generation disabled")
+    
     # Create QApplication first
     qt_app = QApplication(sys.argv)
     qt_app.setApplicationName("Luna RPG v4")

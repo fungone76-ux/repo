@@ -4,9 +4,10 @@ Builds structured prompts combining world, character, and game state context.
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Any
 
 from luna.core.models import CompanionDefinition, GameState, WorldDefinition
+from luna.core.event_context_builder import EventContextBuilder
 from luna.ai.content_guidelines import ContentGuidelines
 from luna.systems.personality import PersonalityEngine
 from luna.systems.location import LocationManager
@@ -25,6 +26,7 @@ class PromptBuilder:
             world: World definition for context
         """
         self.world = world
+        self.event_builder = EventContextBuilder(world)
     
     def build_system_prompt(
         self,
@@ -34,6 +36,10 @@ class PromptBuilder:
         quest_context: str = "",
         memory_context: str = "",
         location_manager: Optional[Any] = None,
+        event_manager: Optional[Any] = None,
+        multi_npc_context: str = "",
+        switched_from: Optional[str] = None,
+        is_temporary: bool = False,
     ) -> str:
         """Build complete system prompt.
         
@@ -44,6 +50,10 @@ class PromptBuilder:
             quest_context: Active quest narrative context
             memory_context: Memory context for recall
             location_manager: For location context and navigation
+            multi_npc_context: Multi-NPC dialogue context
+            event_manager: For active global events context
+            switched_from: Previous companion name if just switched
+            is_temporary: True if current companion is temporary NPC
             
         Returns:
             Complete system prompt
@@ -57,9 +67,28 @@ class PromptBuilder:
             f"Genre: {self.world.genre}",
             f"World: {self.world.name}",
             "",
-            "You are a narrative AI for a visual novel/RPG game.",
-            "Write engaging, atmospheric scenes in Italian.",
+            "You are the Game Master of a visual novel/RPG game.",
+            "NARRATE in ITALIAN LANGUAGE (the game is in Italian).",
             "Focus on character emotions, sensory details, and immersion.",
+            "",
+            "=== CRITICAL RULES (DO NOT BREAK) ===",
+            "1. NEVER repeat or echo what the player just said.",
+            "2. NEVER describe the player's actions - only describe NPC actions and reactions.",
+            "3. NPC DIALOGUE goes in quotes: \"Cosa vuoi?\"",
+            "4. NPC ACTIONS go in third person with asterisks: *Luna crosses her arms.*",
+            "5. NEVER use first person (I/me/my) - you are the Game Master, not a character.",
+            "6. NEVER write 'You see...' or 'You feel...' - that's god-moding the player.",
+            "7. Player input = THEIR action. Your response = NPC reaction ONLY.",
+            "",
+            "=== WRONG vs RIGHT EXAMPLES ===",
+            "",
+            "Player: 'Vado in segreteria' (I go to the office)",
+            "❌ WRONG: 'Vado verso la segreteria...' (You speak as the player!)",
+            "❌ WRONG: 'Vedi che la porta è aperta...' (You describe what player sees!)",
+            "❌ WRONG: 'Io mi chiamo Enrico...' (NPC speaking as player!)",
+            "",
+            "✅ RIGHT: \"Dove vai?\" *Maria crosses her arms blocking the way.* \"Non puoi entrare.\"",
+            "✅ RIGHT: *Luna turns around.* \"Ah, the new student.\" *She looks you up and down.*",
             "",
         ])
         
@@ -87,13 +116,72 @@ class PromptBuilder:
                 "=== ACTIVE COMPANION ===",
                 self._build_companion_context(companion, game_state),
                 "",
-                "=== CHARACTER BASE PROMPT (CRITICAL FOR IMAGES) ===",
-                "The following base prompt defines the character's visual identity.",
-                "MUST be included at the start of every visual_en description:",
+            ])
+            
+            # SWITCH INSTRUCTION: If just switched to temporary NPC, clear focus
+            if is_temporary and switched_from:
+                sections.extend([
+                    "=== COMPANION SWITCH (CRITICAL) ===",
+                    f"",
+                    f"The player has JUST SWITCHED from {switched_from} to {companion.name}.",
+                    f"{switched_from} is NO LONGER IN THE SCENE.",
+                    f"",
+                    f"**FOCUS RULE:**",
+                    f"- You are now speaking ONLY as {companion.name}",
+                    f"- {switched_from} is NOT present, NOT visible, NOT speaking",
+                    f"- Do NOT describe actions or dialogue of {switched_from}",
+                    f"- The conversation is ONLY between PLAYER and {companion.name}",
+                    f"",
+                ])
+            
+            # ROLE INSTRUCTION - V3 Style: Narrator describes, character speaks
+            sections.extend([
+                f"=== ROLE INSTRUCTION (CRITICAL) ===",
+                f"",
+                f"You are the GAME MASTER narrating the scene.",
+                f"The ACTIVE CHARACTER is: {companion.name}",
+                f"",
+                f"**NARRATION STYLE (V3 Pattern):**",
+                f"- Describe {companion.name}'s actions in THIRD PERSON: *{companion.name} si avvicina.*",
+                f"- {companion.name} SPEAKS in FIRST PERSON in dialogue: \"Cosa vuoi?\"",
+                f"- The PLAYER is addressed as YOU (second person): \"Tu sei...\"",
+                f"",
+                f"**EXAMPLE (Correct):**",
+                f'  \"Cosa vuoi?\" *{companion.name} incrocia le braccia.* "Non ho tutto il giorno."',
+                f"",
+                f"**CRITICAL RULES:**",
+                f"1. NEVER describe the player's actions - only {companion.name}'s",
+                f"2. NEVER repeat what the player just said",
+                f"3. Dialogue MUST be in quotes, spoken by {companion.name}",
+                f"4. Actions use *asterisks* and third person",
+                f"5. DO NOT use player's name if affinity is low (0-20) - you don't remember it",
+                f"6. If this is a temporary NPC, NO OTHER CHARACTERS are present unless specified",
+                f"",
+            ])
+            
+            # Companion background and relationship
+            background_context = self._build_companion_background_context(companion)
+            if background_context:
+                sections.extend([
+                    background_context,
+                    "",
+                ])
+            
+            # Affinity tier with examples
+            affinity = game_state.affinity.get(companion.name, 0)
+            affinity_context = self._build_affinity_tier_context(companion, affinity)
+            if affinity_context:
+                sections.extend([
+                    affinity_context,
+                    "",
+                ])
+            
+            sections.extend([
+                "=== CHARACTER VISUAL STYLE ===",
+                f"Character LoRAs and base quality tags: {companion.base_prompt}",
                 "",
-                f"BASE PROMPT: {companion.base_prompt}",
-                "",
-                "visual_en format: BASE_PROMPT + pose + expression + lighting + background",
+                "NOTE: The system automatically applies character LoRAs. DO NOT include them in visual_en.",
+                "visual_en should only describe: pose + expression + lighting + background",
                 "",
             ])
         
@@ -104,16 +192,62 @@ class PromptBuilder:
                 "",
             ])
         else:
-            # Basic location info
-            outfit_desc = game_state.get_active_outfit_description()
+            # Basic location info with Time Slot context
+            # V3 Pattern: Get outfit using KEY->WARDROBE lookup or CREATIVE FALLBACK
+            outfit_desc = self._get_outfit_for_character(companion, game_state)
+            # Handle both enum and string time_of_day
+            time_str = game_state.time_of_day.value if hasattr(game_state.time_of_day, 'value') else str(game_state.time_of_day)
             sections.extend([
                 "=== CURRENT SITUATION ===",
                 f"Location: {game_state.current_location}",
-                f"Time: {game_state.time_of_day.value}",
+                f"Time: {time_str}",
                 f"Turn: {game_state.turn_count}",
-                f"Outfit: {outfit_desc}",
+                "",
+                "=== ⚠️ OUTFIT PERSISTENCE (CRITICAL) ===",
+                f"Current Outfit: {outfit_desc}",
+                "",
+                "CRITICAL RULES:",
+                "1. The character is CURRENTLY WEARING the outfit described above (NOT the key name).",
+                "2. In visual_en, DESCRIBE the actual clothing: 'tailored black blazer and pencil skirt'",
+                "3. NEVER use the outfit KEY (like 'teacher_suit') in visual_en - use the DESCRIPTION",
+                "4. DO NOT change the outfit unless the player explicitly asks for it.",
+                "5. Outfit consistency is MANDATORY for visual coherence.",
                 "",
             ])
+        
+        # Time Slot Context (atmosphere based on time of day)
+        time_slot_context = self._build_time_slot_context(game_state)
+        if time_slot_context:
+            sections.extend([
+                time_slot_context,
+                "",
+            ])
+        
+        # Location Time Description (specific description for current time)
+        location_time_context = self._build_location_time_context(game_state)
+        if location_time_context:
+            sections.extend([
+                location_time_context,
+                "",
+            ])
+        
+        # Location Visual Style (for image generation coherence)
+        location_visual_context = self._build_location_visual_context(game_state)
+        if location_visual_context:
+            sections.extend([
+                location_visual_context,
+                "",
+            ])
+        
+        # Active global events (critical for narrative coherence)
+        if event_manager:
+            active_events = event_manager.get_all_active_events()
+            if active_events:
+                event_context = self.event_builder.build_combined_context(
+                    active_events, game_state
+                )
+                if event_context:
+                    sections.extend([event_context])
         
         # Psychological context
         if personality_engine:
@@ -128,6 +262,38 @@ class PromptBuilder:
                     "=== PSYCHOLOGICAL CONTEXT ===",
                     psych_context,
                     "",
+                    "=== PERSONALITY RESPONSE GUIDE ===",
+                    "Use the impression scores above to guide the character's behavior:",
+                    "",
+                    "TRUST (how much they believe in you):",
+                    "  -100 to -50: Suspicious, questions motives, keeps secrets",
+                    "  -49 to 0: Cautious, polite but distant",
+                    "  1 to 50: Friendly, shares minor personal details",
+                    "  51 to 100: Fully open, shares secrets, vulnerable",
+                    "",
+                    "ATTRACTION (romantic/physical interest):",
+                    "  -100 to -50: Repulsed, avoids contact",
+                    "  -49 to 0: No interest, treats as friend only",
+                    "  1 to 50: Flirtatious, seeks attention",
+                    "  51 to 100: Passionate, physical contact, seductive",
+                    "",
+                    "FEAR (intimidation/respect):",
+                    "  -100 to -50: Disrespectful, challenges authority",
+                    "  -49 to 0: Comfortable, treats as equal",
+                    "  1 to 50: Nervous, seeks approval",
+                    "  51 to 100: Terrified, submissive, obeys without question",
+                    "",
+                    "CURIOSITY (interest in knowing you):",
+                    "  -100 to -50: Avoids, changes subject",
+                    "  -49 to 0: Indifferent",
+                    "  1 to 50: Asks questions, seeks interaction",
+                    "  51 to 100: Obsessive interest, stalker-like attention",
+                    "",
+                    "POWER BALANCE (who dominates the relationship):",
+                    "  -100 to -40: Player is boss, NPC obeys and submits",
+                    "  -39 to 39: Equal partnership, mutual respect",
+                    "  40 to 100: NPC is boss, player must seek their favor",
+                    "",
                 ])
         
         # Story beat (mandatory)
@@ -137,6 +303,13 @@ class PromptBuilder:
                 story_context,
                 "",
                 "CRITICAL: Include this event in your response.",
+                "",
+            ])
+        
+        # Multi-NPC context
+        if multi_npc_context:
+            sections.extend([
+                multi_npc_context,
                 "",
             ])
         
@@ -155,20 +328,33 @@ class PromptBuilder:
                 "",
             ])
         
+        # Visual Tag Enforcement - ONLY if events or quests are active
+        visual_enforcement = self._build_visual_enforcement_section(
+            event_manager, quest_context
+        )
+        if visual_enforcement:
+            sections.extend([
+                visual_enforcement,
+                "",
+            ])
+        
         # CRITICAL GAMEPLAY RULES (Hardcore Mode)
         sections.extend([
             "",
             "=== ⚠️ CRITICAL GAMEPLAY RULES ===",
             "",
-            "**1. LANGUAGE & PERSPECTIVE:**",
+            "**1. LANGUAGE & PERSPECTIVE (V3 Pattern):**",
             "- Narrate in ITALIAN language",
-            "- Use SECOND PERSON perspective ('Tu', 'Il tuo sguardo')",
-            "- NEVER describe Protagonist's thoughts (NO god-modding)",
+            "- You are the GAME MASTER - describe the scene objectively",
+            "- CHARACTER DIALOGUE: In first person (\"Cosa vuoi?\")",
+            "- CHARACTER ACTIONS: In third person (*Luna si avvicina.*)",
+            "- PLAYER: Addressed as YOU (\"Tu sei...\")",
+            "- NEVER describe player's thoughts or actions (NO god-modding)",
             "",
             "**2. DIALOGUE MANDATORY:**",
             "- The character MUST SPEAK in EVERY turn",
             "- MINIMUM 2-3 lines of dialogue per response",
-            "- Use quoted dialogue extensively",
+            "- Dialogue in quotes, actions in asterisks",
             "- The character MUST be named in narration",
             "",
             "**3. MINIMAL DESCRIPTION:**",
@@ -213,7 +399,7 @@ class PromptBuilder:
             "   - Purpose: Concise description (20-35 words) of the image",
             "   - Focus: Describe ACTION, POSE, and CHARACTERS visible",
             "   - IMPORTANT: Name the character if you want to see them",
-            "   - Outfit: System handles outfit. Don't describe clothes unless removing/changing",
+            "   - Outfit: DESCRIBE the current outfit in detail ( blazer, skirt, etc.)",
             "   - Constraints:",
             "     * NO glasses, NO hats, NO sunglasses",
             "     * NO facial expressions ('sad', 'happy', 'smiling')",
@@ -305,8 +491,13 @@ class PromptBuilder:
             "",
             "CRITICAL: Respond with valid JSON only. NO markdown, NO extra text.",
             "",
+            "**EXAMPLE (Correct V3 Pattern):**",
+            '  "text": "\\"Cosa vuoi?\\" *Luna incrocia le braccia.* \\"Non ho tutto il giorno.\\" *Il suo sguardo è freddo.* \\"Parla, o vattene.\\"",',
+            '  "visual_en": "Medium shot, Luna standing by window, arms crossed, stern expression, classroom",',
+            '  "tags_en": ["medium shot", "standing", "arms crossed", "classroom", "masterpiece"],',
+            "",
             "{",
-            '  "text": "Narration in Italian. 3 short sentences. Explicit if appropriate. Character MUST speak (2-3 dialogue lines).",',
+            '  "text": "Narration in Italian. Character speaks in quotes (\\"Dialogue\\"), actions in asterisks (*Action*).",',
             '  "visual_en": "Cowboy shot from below, Luna standing behind desk, legs crossed in sheer pantyhose, arms folded, classroom window light",',
             '  "tags_en": ["cowboy shot", "from below", "legs focus", "standing", "crossed legs", "classroom", "masterpiece"],',
             '  "body_focus": "legs",',
@@ -409,14 +600,19 @@ Respond in JSON format."""
             f"Current Affinity: {game_state.affinity.get(companion.name, 0)}/100",
         ]
         
-        # Emotional state
+        # Emotional state (detailed)
         npc_state = game_state.npc_states.get(companion.name)
-        if npc_state:
-            lines.append(f"Emotional State: {npc_state.emotional_state}")
+        if npc_state and npc_state.emotional_state:
+            emotional_detail = self._build_detailed_emotional_context(
+                companion, npc_state.emotional_state
+            )
+            if emotional_detail:
+                lines.append(f"\n=== EMOTIONAL STATE ===")
+                lines.append(emotional_detail)
         
         # Wardrobe
         if companion.wardrobe:
-            lines.append(f"Available Outfits: {', '.join(companion.wardrobe.keys())}")
+            lines.append(f"\nAvailable Outfits: {', '.join(companion.wardrobe.keys())}")
         
         # Dialogue tone based on affinity
         affinity = game_state.affinity.get(companion.name, 0)
@@ -453,3 +649,334 @@ Respond in JSON format."""
                 current_tone = data.get("tone", "")
         
         return current_tone
+    
+    def _build_time_slot_context(self, game_state: GameState) -> str:
+        """Build time slot context with ambient description.
+        
+        Args:
+            game_state: Current game state
+            
+        Returns:
+            Formatted time slot context or empty string
+        """
+        time_slot = self.world.time_slots.get(game_state.time_of_day)
+        if not time_slot:
+            return ""
+        
+        lines = ["=== TIME OF DAY ==="]
+        
+        if time_slot.ambient_description:
+            lines.append(f"Atmosphere: {time_slot.ambient_description}")
+        
+        if time_slot.lighting:
+            lines.append(f"Lighting: {time_slot.lighting}")
+        
+        return "\n".join(lines)
+    
+    def _build_location_time_context(self, game_state: GameState) -> str:
+        """Build location-specific time description.
+        
+        Args:
+            game_state: Current game state
+            
+        Returns:
+            Formatted location time context or empty string
+        """
+        location = self.world.locations.get(game_state.current_location)
+        if not location:
+            return ""
+        
+        time_desc = location.time_descriptions.get(game_state.time_of_day)
+        if not time_desc:
+            return ""
+        
+        return f"=== LOCATION ATMOSPHERE ===\n{time_desc}"
+    
+    def _build_detailed_emotional_context(
+        self,
+        companion: CompanionDefinition,
+        emotional_state_name: str,
+    ) -> str:
+        """Build detailed emotional state context.
+        
+        Args:
+            companion: Companion definition
+            emotional_state_name: Current emotional state name
+            
+        Returns:
+            Formatted emotional context or empty string
+        """
+        if not emotional_state_name or not companion.emotional_states:
+            return ""
+        
+        state_def = companion.emotional_states.get(emotional_state_name)
+        if not state_def:
+            return ""
+        
+        # Handle both dict and Pydantic model
+        if isinstance(state_def, dict):
+            description = state_def.get('description', '')
+            dialogue_tone = state_def.get('dialogue_tone', '')
+        else:
+            description = getattr(state_def, 'description', '')
+            dialogue_tone = getattr(state_def, 'dialogue_tone', '')
+        
+        lines = [f"State: {emotional_state_name}"]
+        
+        if description:
+            lines.append(f"Description: {description}")
+        
+        if dialogue_tone:
+            lines.append(f"Dialogue Style: {dialogue_tone}")
+        
+        return "\n".join(lines)
+    
+    def _build_companion_background_context(
+        self,
+        companion: CompanionDefinition,
+    ) -> str:
+        """Build companion background and relationship context.
+        
+        Args:
+            companion: Companion definition
+            
+        Returns:
+            Formatted background context or empty string
+        """
+        if not companion.background and not companion.relationship_to_player:
+            return ""
+        
+        lines = ["=== COMPANION BACKGROUND ==="]
+        
+        if companion.background:
+            lines.append(f"History: {companion.background}")
+        
+        if companion.relationship_to_player:
+            lines.append(f"Relationship Dynamic: {companion.relationship_to_player}")
+        
+        return "\n".join(lines)
+    
+    def _get_outfit_for_character(
+        self,
+        companion: Optional[CompanionDefinition],
+        game_state: GameState,
+    ) -> str:
+        """Get outfit description using V3 Pattern.
+        
+        V3 Pattern supports TWO modes:
+        1. Key YAML (es. "teacher_formal") -> Uses description from wardrobe (CONSISTENT)
+        2. Free description (es. "wearing red dress") -> Uses directly (CREATIVE FALLBACK)
+        
+        This ensures visual coherence for defined outfits while allowing creativity.
+        
+        Args:
+            companion: Companion definition with wardrobe
+            game_state: Current game state
+            
+        Returns:
+            Outfit description for prompts
+        """
+        if not companion:
+            return "casual clothes"
+        
+        # Get current outfit from game state (can be key OR description)
+        outfit = game_state.get_outfit()
+        current_outfit_value = outfit.style if outfit else "default"
+        
+        print(f"    [DEBUG Outfit] char={companion.name}, key='{current_outfit_value}'")
+        
+        # V3 LOGIC:
+        # 1. Check if current_outfit_value is a KEY in the wardrobe
+        if companion.wardrobe and current_outfit_value in companion.wardrobe:
+            wardrobe_def = companion.wardrobe[current_outfit_value]
+            # Handle both string (legacy) and object (WardrobeDefinition)
+            if isinstance(wardrobe_def, str):
+                outfit_desc = wardrobe_def
+                print(f"    [DEBUG Outfit] Found in YAML (String): '{outfit_desc[:50]}...'")
+            else:
+                # Priority: sd_prompt > description
+                outfit_desc = getattr(wardrobe_def, 'sd_prompt', None) or \
+                             getattr(wardrobe_def, 'description', current_outfit_value)
+                print(f"    [DEBUG Outfit] Found in YAML (Dict): '{outfit_desc[:50]}...'")
+            return outfit_desc
+        
+        # 2. If NOT in wardrobe, assume it's a FREE DESCRIPTION from LLM (Creative Mode!)
+        # This allows: "wearing a red dress I bought yesterday" even if not in wardrobe
+        print(f"    [DEBUG Outfit] NOT in YAML. Using creative description: '{current_outfit_value[:50]}...'")
+        return current_outfit_value
+    
+    def _build_affinity_tier_context(
+        self,
+        companion: CompanionDefinition,
+        affinity: int,
+    ) -> str:
+        """Build affinity tier context with examples and voice markers.
+        
+        Args:
+            companion: Companion definition
+            affinity: Current affinity value
+            
+        Returns:
+            Formatted affinity tier context or empty string
+        """
+        if not companion.affinity_tiers:
+            return ""
+        
+        # Find current tier
+        current_tier_data = None
+        current_tier_range = ""
+        
+        for tier_range, data in sorted(companion.affinity_tiers.items(), 
+                                       key=lambda x: int(x[0].split('-')[0]) if '-' in x[0] else int(x[0])):
+            # Parse "26-50" or "0-25"
+            if '-' in tier_range:
+                min_val = int(tier_range.split('-')[0])
+                if affinity >= min_val:
+                    current_tier_data = data
+                    current_tier_range = tier_range
+            else:
+                # Single value like "100"
+                min_val = int(tier_range)
+                if affinity >= min_val:
+                    current_tier_data = data
+                    current_tier_range = tier_range
+        
+        if not current_tier_data:
+            return ""
+        
+        # Handle both dict and model
+        if isinstance(current_tier_data, dict):
+            name = current_tier_data.get('name', '')
+            tone = current_tier_data.get('tone', '')
+            examples = current_tier_data.get('examples', [])
+            voice_markers = current_tier_data.get('voice_markers', [])
+        else:
+            name = getattr(current_tier_data, 'name', '')
+            tone = getattr(current_tier_data, 'tone', '')
+            examples = getattr(current_tier_data, 'examples', [])
+            voice_markers = getattr(current_tier_data, 'voice_markers', [])
+        
+        lines = [f"=== AFFINITY LEVEL: {current_tier_range} ==="]
+        
+        if name:
+            lines.append(f"Stage: {name}")
+        if tone:
+            lines.append(f"Tone: {tone}")
+        
+        if examples:
+            lines.append("\nExample Dialogue:")
+            for ex in examples[:3]:  # Max 3 examples
+                lines.append(f'  - "{ex}"')
+        
+        if voice_markers:
+            lines.append("\nVoice Markers:")
+            for vm in voice_markers:
+                lines.append(f"  • {vm}")
+        
+        return "\n".join(lines)
+    
+    def _build_location_visual_context(
+        self,
+        game_state: GameState,
+    ) -> str:
+        """Build location visual style and lighting context.
+        
+        Args:
+            game_state: Current game state
+            
+        Returns:
+            Formatted visual context or empty string
+        """
+        location = self.world.locations.get(game_state.current_location)
+        if not location:
+            return ""
+        
+        visual_style = getattr(location, 'visual_style', '')
+        lighting = getattr(location, 'lighting', '')
+        
+        if not visual_style and not lighting:
+            return ""
+        
+        lines = ["=== LOCATION VISUALS ==="]
+        
+        if visual_style:
+            lines.append(f"Style: {visual_style}")
+        if lighting:
+            lines.append(f"Lighting: {lighting}")
+        
+        return "\n".join(lines)
+    
+    def _build_visual_enforcement_section(
+        self,
+        event_manager: Optional[Any],
+        quest_context: str,
+    ) -> str:
+        """Build visual tag enforcement section.
+        
+        This section appears ONLY when events or quests are active,
+        forcing the LLM to include visual tags in image generation.
+        
+        Args:
+            event_manager: For active global events
+            quest_context: Active quest narrative context
+            
+        Returns:
+            Enforcement section or empty string if no active events/quests
+        """
+        has_active_quest = bool(quest_context and quest_context.strip())
+        
+        # Collect visual tags from active events
+        event_visual_tags: List[str] = []
+        if event_manager:
+            active_events = event_manager.get_all_active_events()
+            for event in active_events:
+                effects = getattr(event, 'effects', {}) or {}
+                if not isinstance(effects, dict):
+                    effects = effects.__dict__ if hasattr(effects, '__dict__') else {}
+                tags = effects.get('visual_tags', [])
+                if isinstance(tags, list):
+                    event_visual_tags.extend(tags)
+        
+        # If no active events or quests, return empty
+        if not has_active_quest and not event_visual_tags:
+            return ""
+        
+        lines = [
+            "=== 🎨 VISUAL TAG ENFORCEMENT ===",
+            "",
+            "⚠️ CRITICAL: An active Event or Quest requires SPECIFIC VISUAL ELEMENTS.",
+            "",
+            "You MUST include these visual elements in your response:",
+            "",
+        ]
+        
+        # Event visual tags (specific)
+        if event_visual_tags:
+            unique_tags = list(dict.fromkeys(event_visual_tags))  # Preserve order, remove duplicates
+            lines.extend([
+                "FROM ACTIVE EVENT:",
+                f"  visual_en MUST include: {', '.join(unique_tags)}",
+                f"  tags_en MUST include: {', '.join(unique_tags)}",
+                "",
+            ])
+        
+        # Quest enforcement (general instruction)
+        if has_active_quest:
+            lines.extend([
+                "FROM ACTIVE QUEST:",
+                "  The quest's narrative context MUST be reflected in the scene.",
+                "  Include key visual elements mentioned in the quest description.",
+                "",
+            ])
+        
+        lines.extend([
+            "ENFORCEMENT RULES:",
+            "  1. visual_en MUST explicitly mention the required visual elements",
+            "  2. tags_en MUST include the corresponding technical tags",
+            "  3. DO NOT ignore these requirements - the image MUST reflect the active situation",
+            "  4. Example: if 'rain' is required → visual_en: '...standing in rain, wet hair...' + tags: ['rain', 'wet']",
+            "",
+            "FAILURE TO COMPLY = Inconsistent image that breaks narrative immersion.",
+        ])
+        
+        return "\n".join(lines)

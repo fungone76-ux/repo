@@ -240,12 +240,29 @@ class Settings(BaseSettings):
     @property
     def video_available(self) -> bool:
         """True if video generation is available."""
+        # Debug mode: disable video generation
+        if self.debug_no_media:
+            return False
         return (
             self.is_runpod 
             and self.video_enabled 
             and self.runpod_id is not None
             and self.comfy_url is not None
         )
+    
+    @property
+    def image_available(self) -> bool:
+        """True if image generation is available."""
+        # Debug mode: disable image generation
+        if self.debug_no_media:
+            return False
+        return self.comfy_url is not None
+    
+    @property
+    def debug_no_media(self) -> bool:
+        """True if running in debug mode (no media generation)."""
+        import os
+        return os.environ.get("LUNA_DEBUG_NO_MEDIA") == "1"
     
     @property
     def has_llm_config(self) -> bool:

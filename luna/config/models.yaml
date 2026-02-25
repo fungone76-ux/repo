@@ -1,0 +1,25 @@
+# LLM Model Configuration for Luna RPG v4
+# Update this file to change models without editing code
+
+gemini:
+  # Primary model - used for all requests
+  primary: "gemini-3-pro-preview"
+  
+  # Fallback models - tried in order if primary fails
+  # Must be valid model names from Google AI API
+  fallbacks:
+    - "gemini-2.0-flash"          # Fast fallback
+    - "gemini-1.5-pro"            # Stable Pro model
+    - "gemini-1.5-flash"          # Fast fallback
+  
+  # Settings
+  temperature: 0.95
+  max_tokens: 2048
+  top_p: 0.98
+  top_k: 40
+
+moonshot:
+  # Moonshot fallback provider
+  primary: "kimi-k2.5"
+  temperature: 0.9
+  max_tokens: 2048

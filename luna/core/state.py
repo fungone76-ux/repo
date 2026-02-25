@@ -202,11 +202,13 @@ class StateManager:
         }
         
         # Update database
+        # Handle both enum and string time_of_day
+        time_value = state.time_of_day.value if hasattr(state.time_of_day, 'value') else str(state.time_of_day)
         updated = await self.db.update_session(
             db=db,
             session_id=state.session_id,
             turn_count=state.turn_count,
-            time_of_day=state.time_of_day.value,
+            time_of_day=time_value,
             current_location=state.current_location,
             active_companion=state.active_companion,
             companion_outfit=state.companion_outfit,

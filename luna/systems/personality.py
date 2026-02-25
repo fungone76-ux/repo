@@ -127,6 +127,7 @@ class PersonalityEngine:
     def __init__(
         self,
         state_manager: StateManager,
+        world: Any = None,
         use_llm_analysis: bool = False,
         llm_analysis_interval: int = 3,
     ) -> None:
@@ -134,10 +135,12 @@ class PersonalityEngine:
         
         Args:
             state_manager: For accessing game state
+            world: World definition for starting impression values
             use_llm_analysis: Enable LLM-based deep analysis
             llm_analysis_interval: Analyze every N turns (if LLM enabled)
         """
         self.state_manager = state_manager
+        self.world = world
         self._states: Dict[str, PersonalityState] = {}
         self._use_llm = use_llm_analysis
         self._llm_interval = llm_analysis_interval
@@ -168,6 +171,7 @@ class PersonalityEngine:
         companion_name: str,
         user_input: str,
         turn_count: int,
+        is_temporary: bool = False,
     ) -> BehavioralUpdate:
         """Analyze player action for behavioral patterns.
         
@@ -175,10 +179,19 @@ class PersonalityEngine:
             companion_name: Active companion
             user_input: Player's input text
             turn_count: Current turn
+            is_temporary: If True, skip analysis (for generic NPCs)
             
         Returns:
             Analysis result with detected traits and impression changes
         """
+        # Skip analysis for temporary/generic NPCs
+        if is_temporary:
+            return BehavioralUpdate(
+                detected_traits=[],
+                impression_changes={},
+                archetype_hint=None,
+            )
+        
         detected: List[Tuple[BehaviorType, TraitIntensity]] = []
         impression_changes: Dict[str, int] = {}
         
@@ -315,8 +328,10 @@ class PersonalityEngine:
         if include_behavioral and state.behavioral_memory:
             lines.append("=== BEHAVIORAL PATTERNS ===")
             for trait, memory in state.behavioral_memory.items():
+                trait_str = trait.value if hasattr(trait, 'value') else str(trait)
+                intensity_str = memory.intensity.value if hasattr(memory.intensity, 'value') else str(memory.intensity)
                 lines.append(
-                    f"- {trait.value}: {memory.intensity.value} "
+                    f"- {trait_str}: {intensity_str} "
                     f"({memory.occurrences} times)"
                 )
             lines.append("")
@@ -423,8 +438,17 @@ class PersonalityEngine:
     def _ensure_state(self, companion_name: str) -> PersonalityState:
         """Get or create personality state."""
         if companion_name not in self._states:
+            # Check if world defines starting impression values
+            starting_impression = None
+            if self.world and hasattr(self.world, 'companions'):
+                companion_def = self.world.companions.get(companion_name)
+                if companion_def and hasattr(companion_def, 'starting_impression'):
+                    starting_impression = companion_def.starting_impression
+            
+            # Create state with custom or default impression
             self._states[companion_name] = PersonalityState(
                 character_name=companion_name,
+                impression=starting_impression if starting_impression else Impression(),
             )
         return self._states[companion_name]
     
@@ -459,6 +483,7 @@ class PersonalityEngine:
             return state.behavioral_memory[behavior].intensity
         return TraitIntensity.SUBTLE
     
+    # DEBUG: Log impression changes
     def _apply_impression_changes(
         self,
         companion_name: str,
@@ -474,6 +499,8 @@ class PersonalityEngine:
         imp.fear = max(-100, min(100, imp.fear + changes.get("fear", 0)))
         imp.curiosity = max(-100, min(100, imp.curiosity + changes.get("curiosity", 0)))
         imp.dominance_balance = max(-100, min(100, imp.dominance_balance + changes.get("dominance_balance", 0)))
+        import logging
+        logging.getLogger("LunaDebug").debug(f"IMPRESSION CHANGE: {companion_name} - {changes}")
     
     def _update_npc_awareness(
         self,

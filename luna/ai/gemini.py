@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 from luna.core.models import LLMResponse, StateUpdate
 from luna.ai.base import BaseLLMClient
+from luna.config import get_model_config
+from luna.ai.json_repair import repair_json, JSONRepair
 
 # Optional import - fail gracefully if not installed
 try:
@@ -21,28 +23,37 @@ class GeminiClient(BaseLLMClient):
     
     Primary provider for Luna RPG v4.
     Supports JSON mode for structured responses.
+    Models loaded from config/models.yaml
     """
-    
-    DEFAULT_MODEL = "gemini-2.0-flash"
-    FALLBACK_MODELS = ["gemini-2.5-pro", "gemini-1.5-pro"]
     
     def __init__(
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
-        temperature: float = 0.95,
-        max_tokens: int = 2048,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize Gemini client.
         
         Args:
             api_key: Google API key (optional, uses env if not provided)
-            model: Model name (defaults to gemini-2.0-flash)
-            temperature: Sampling temperature (0-2)
-            max_tokens: Max output tokens
+            model: Model name (overrides config if provided)
+            temperature: Sampling temperature (0-2, overrides config)
+            max_tokens: Max output tokens (overrides config)
         """
-        super().__init__(model or self.DEFAULT_MODEL, **kwargs)
+        # Load configuration from models.yaml
+        config = get_model_config()
+        self._primary_model = config.gemini_primary
+        self._fallback_models = config.gemini_fallbacks
+        settings = config.gemini_settings
+        
+        # Use provided values or config values
+        model = model or self._primary_model
+        temperature = temperature if temperature is not None else settings["temperature"]
+        max_tokens = max_tokens if max_tokens is not None else settings["max_tokens"]
+        
+        super().__init__(model, **kwargs)
         
         if not GEMINI_AVAILABLE:
             raise ImportError(
@@ -131,8 +142,8 @@ class GeminiClient(BaseLLMClient):
             ),
         ]
         
-        # Try primary model, then fallbacks
-        models_to_try = [self.model] + self.FALLBACK_MODELS
+        # Try primary model, then fallbacks from config
+        models_to_try = [self.model] + self._fallback_models
         last_error: Optional[Exception] = None
         
         for model in models_to_try:
@@ -258,9 +269,14 @@ class GeminiClient(BaseLLMClient):
                     provider=f"{self.provider_name}/{model_used}",
                 )
             
-            # Extract updates
+            # Extract updates - handle validation errors gracefully
             updates_data = data.get("updates", {})
-            updates = StateUpdate(**updates_data) if updates_data else StateUpdate()
+            try:
+                updates = StateUpdate(**updates_data) if updates_data else StateUpdate()
+            except Exception as validation_error:
+                print(f"[Gemini] StateUpdate validation failed: {validation_error}")
+                # Create empty updates - game can continue
+                updates = StateUpdate()
             
             return LLMResponse(
                 text=data.get("text", ""),
@@ -275,9 +291,35 @@ class GeminiClient(BaseLLMClient):
             )
             
         except json.JSONDecodeError as e:
+            # Try automatic JSON repair
+            print(f"[Gemini] JSON parse failed, attempting repair...")
+            repaired_data = repair_json(text, strict=False)
+            
+            if repaired_data is not None:
+                print(f"[Gemini] JSON repair successful")
+                try:
+                    # Extract updates
+                    updates_data = repaired_data.get("updates", {})
+                    updates = StateUpdate(**updates_data) if updates_data else StateUpdate()
+                    
+                    return LLMResponse(
+                        text=repaired_data.get("text", ""),
+                        visual_en=repaired_data.get("visual_en", ""),
+                        tags_en=repaired_data.get("tags_en", []),
+                        body_focus=repaired_data.get("body_focus"),
+                        approach_used=repaired_data.get("approach_used", "standard"),
+                        composition=repaired_data.get("composition", "medium_shot"),
+                        updates=updates,
+                        raw_response=text,
+                        provider=f"{self.provider_name}/{model_used}",
+                    )
+                except Exception as repair_error:
+                    print(f"[Gemini] Repair parsing failed: {repair_error}")
+            
             if strict_json:
                 print(f"[Gemini] Strict JSON: Parse failed - {e}")
                 return None
+            
             # Not JSON - treat as plain text (fallback mode)
             return LLMResponse(
                 text=text,

@@ -140,7 +140,9 @@ class LocationManager:
                 # Show state if not normal
                 state_str = ""
                 if instance and instance.current_state != LocationState.NORMAL:
-                    state_str = f" [{instance.current_state.value}]"
+                    # Handle both enum and string state
+                    current_state_str = instance.current_state.value if hasattr(instance.current_state, 'value') else str(instance.current_state)
+                    state_str = f" [{current_state_str}]"
                 
                 # Show discovery hint if not discovered
                 if not instance.discovered and loc.discovery_hint:
@@ -437,7 +439,9 @@ class LocationManager:
         
         # State if not normal
         if instance.current_state != LocationState.NORMAL:
-            lines.append(f"State: {instance.current_state.value}")
+            # Handle both enum and string state
+            current_state_str = instance.current_state.value if hasattr(instance.current_state, 'value') else str(instance.current_state)
+            lines.append(f"State: {current_state_str}")
         
         # Visible locations
         visible = self.get_visible_locations()

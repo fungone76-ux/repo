@@ -527,6 +527,28 @@ class BehavioralMemory(LunaBaseModel):
     last_turn: int = Field(default=0, ge=0)
     intensity: TraitIntensity = TraitIntensity.SUBTLE
     
+    @field_validator('trait', mode='before')
+    @classmethod
+    def validate_trait(cls, v):
+        """Convert string to BehaviorType enum if needed."""
+        if isinstance(v, str):
+            try:
+                return BehaviorType(v.lower())
+            except ValueError:
+                return BehaviorType(v.upper())
+        return v
+    
+    @field_validator('intensity', mode='before')
+    @classmethod
+    def validate_intensity(cls, v):
+        """Convert string to TraitIntensity enum if needed."""
+        if isinstance(v, str):
+            try:
+                return TraitIntensity(v.lower())
+            except ValueError:
+                return TraitIntensity(v.upper())
+        return v
+    
     def update(self, turn: int) -> None:
         """Update memory with new occurrence."""
         self.occurrences += 1
@@ -538,12 +560,16 @@ class BehavioralMemory(LunaBaseModel):
 
 
 class Impression(LunaBaseModel):
-    """NPC impression of player (-100 to +100)."""
+    """NPC impression of player (-100 to +100).
+    
+    All values start at 0 for new encounters - neutral first impression.
+    They evolve based on player actions and interactions.
+    """
     
     trust: int = Field(default=0, ge=-100, le=100)
     attraction: int = Field(default=0, ge=-100, le=100)
     fear: int = Field(default=0, ge=-100, le=100)
-    curiosity: int = Field(default=50, ge=-100, le=100)
+    curiosity: int = Field(default=0, ge=-100, le=100)  # Was 50, now 0 for neutral start
     dominance_balance: int = Field(default=0, ge=-100, le=100)
     
     def get_dominant_emotion(self) -> str:
@@ -583,6 +609,28 @@ class PersonalityState(LunaBaseModel):
     # Calculated
     detected_archetype: Optional[str] = None
     archetype_cache_turn: int = Field(default=-1, ge=-1)
+    
+    @field_validator('behavioral_memory', mode='before')
+    @classmethod
+    def validate_behavioral_memory_keys(cls, v):
+        """Convert string keys to BehaviorType enum keys."""
+        if not isinstance(v, dict):
+            return v
+        result = {}
+        for key, value in v.items():
+            # Convert string key to enum
+            if isinstance(key, str):
+                try:
+                    enum_key = BehaviorType(key.lower())
+                except ValueError:
+                    try:
+                        enum_key = BehaviorType(key.upper())
+                    except ValueError:
+                        continue  # Skip invalid keys
+                result[enum_key] = value
+            else:
+                result[key] = value
+        return result
 
 
 # =============================================================================
@@ -778,6 +826,9 @@ class WardrobeDefinition(LunaBaseModel):
     description: str = ""
     """Description of the style (e.g., 'Casual clothes for relaxing')."""
     
+    sd_prompt: str = ""
+    """Stable Diffusion prompt for this outfit (overrides description for image gen)."""
+    
     special: bool = False
     """If True, this is a special state (towel, apron, etc)."""
 
@@ -815,6 +866,18 @@ class CompanionDefinition(LunaBaseModel):
     emotional_states: Dict[str, Any] = Field(default_factory=dict)
     affinity_tiers: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     
+    # Core personality traits (for LLM context)
+    background: str = ""  # Personal history/backstory
+    relationship_to_player: str = ""  # Dynamic with protagonist
+    
+    # Aliases for auto-switch companion detection
+    # Alternative names, titles, or nicknames that refer to this character
+    aliases: List[str] = Field(default_factory=list)
+    
+    # Starting impression values (optional - if not set, defaults to neutral 0)
+    # Use this for established relationships (e.g., wife, childhood friend, enemy)
+    starting_impression: Optional[Impression] = None
+    
     # Dialogue
     dialogue_tone: Dict[str, Any] = Field(default_factory=dict)
     
@@ -823,6 +886,9 @@ class CompanionDefinition(LunaBaseModel):
     
     # Relations
     relations: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    
+    # Temporary NPC flag - if True, personality/affinity systems skip this character
+    is_temporary: bool = False
 
 
 class NarrativeArc(LunaBaseModel):
@@ -945,6 +1011,12 @@ class WorldDefinition(LunaBaseModel):
     
     # Global events
     global_events: Dict[str, GlobalEventDefinition] = Field(default_factory=dict)
+    
+    # Random events (explorative, repeatable)
+    random_events: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Daily events (routine, time-based)
+    daily_events: Dict[str, Any] = Field(default_factory=dict)
     
     # Player character default stats
     player_character: Dict[str, Any] = Field(default_factory=dict)

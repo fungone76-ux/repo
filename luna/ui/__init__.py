@@ -14,7 +14,11 @@ from luna.ui.widgets import (
     GlobalEventWidget,
     StoryLogWidget,
     ImageDisplayWidget,
+    OutfitWidget,
+    LocationWidget,
 )
+from luna.ui.action_bar import ActionBarWidget, QuickActionBar
+from luna.ui.feedback_visualizer import FeedbackVisualizer, FeedbackType
 
 __all__ = [
     "main",
@@ -27,4 +31,10 @@ __all__ = [
     "GlobalEventWidget",
     "StoryLogWidget",
     "ImageDisplayWidget",
+    "OutfitWidget",
+    "LocationWidget",
+    "ActionBarWidget",
+    "QuickActionBar",
+    "FeedbackVisualizer",
+    "FeedbackType",
 ]

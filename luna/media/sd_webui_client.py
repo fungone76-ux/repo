@@ -25,7 +25,7 @@ class SDWebUIClient:
     def __init__(self) -> None:
         """Initialize SD WebUI client."""
         self.settings = get_settings()
-        self.timeout = aiohttp.ClientTimeout(total=120)
+        self.timeout = aiohttp.ClientTimeout(total=600)  # 10 min for local generation
     
     async def generate(
         self,
@@ -72,7 +72,7 @@ class SDWebUIClient:
             
             print(f"\n[SD WebUI] Generating {character_name}...")
             print(f"[SD WebUI] Size: {prompt.width}x{prompt.height}")
-            print(f"[SD WebUI] Prompt: {prompt.positive[:100]}...")
+            print(f"[SD WebUI] Prompt: {prompt.positive}")
             
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 # Generate image

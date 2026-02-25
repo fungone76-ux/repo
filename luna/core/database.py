@@ -137,6 +137,51 @@ class QuestStateModel(Base):
     session = relationship("GameSessionModel", back_populates="quest_states")
 
 
+class GlobalEventStateModel(Base):
+    """Database model for active global events."""
+    
+    __tablename__ = "global_event_states"
+    
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=False)
+    
+    event_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, default="")
+    icon = Column(String, default="🌍")
+    
+    duration_turns = Column(Integer, default=5)
+    remaining_turns = Column(Integer, default=5)
+    effects = Column(JSON, default=dict)
+    narrative_prompt = Column(Text, default="")
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship
+    session = relationship("GameSessionModel")
+
+
+class StoryDirectorStateModel(Base):
+    """Database model for StoryDirector state (narrative progress)."""
+    
+    __tablename__ = "story_director_states"
+    
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=False, unique=True)
+    
+    current_chapter = Column(String, default="")
+    current_beat_index = Column(Integer, default=0)
+    completed_beats = Column(JSON, default=list)  # List of completed beat IDs
+    beat_history = Column(JSON, default=list)  # List of {beat_id, turn, quality}
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship
+    session = relationship("GameSessionModel")
+
+
 class DatabaseManager:
     """Manages async database operations."""
     
@@ -562,6 +607,139 @@ class DatabaseManager:
             .where(QuestStateModel.session_id == session_id)
         )
         return list(result.scalars().all())
+    
+    # ========================================================================
+    # Global Event State Operations
+    # ========================================================================
+    
+    async def save_global_event_states(
+        self,
+        db: AsyncSession,
+        session_id: int,
+        active_events: List[Dict[str, Any]],
+    ) -> None:
+        """Save active global events for session.
+        
+        Args:
+            db: Database session
+            session_id: Session ID
+            active_events: List of event dicts from GlobalEventManager.to_dict()
+        """
+        # Delete existing events for this session
+        await db.execute(
+            GlobalEventStateModel.__table__.delete()
+            .where(GlobalEventStateModel.session_id == session_id)
+        )
+        
+        # Insert new events
+        for event_data in active_events:
+            state = GlobalEventStateModel(
+                session_id=session_id,
+                event_id=event_data.get("event_id", ""),
+                name=event_data.get("name", ""),
+                description=event_data.get("description", ""),
+                icon=event_data.get("icon", "🌍"),
+                duration_turns=event_data.get("duration_turns", 5),
+                remaining_turns=event_data.get("remaining_turns", 5),
+                effects=event_data.get("effects", {}),
+                narrative_prompt=event_data.get("narrative_prompt", ""),
+            )
+            db.add(state)
+        
+        await db.flush()
+    
+    async def get_global_event_states(
+        self,
+        db: AsyncSession,
+        session_id: int,
+    ) -> List[GlobalEventStateModel]:
+        """Get all active global events for session.
+        
+        Args:
+            db: Database session
+            session_id: Session ID
+            
+        Returns:
+            List of global event states
+        """
+        result = await db.execute(
+            select(GlobalEventStateModel)
+            .where(GlobalEventStateModel.session_id == session_id)
+        )
+        return list(result.scalars().all())
+    
+    # ========================================================================
+    # Story Director State Operations
+    # ========================================================================
+    
+    async def save_story_director_state(
+        self,
+        db: AsyncSession,
+        session_id: int,
+        current_chapter: str,
+        current_beat_index: int,
+        completed_beats: List[str],
+        beat_history: List[Dict[str, Any]],
+    ) -> StoryDirectorStateModel:
+        """Save StoryDirector state.
+        
+        Args:
+            db: Database session
+            session_id: Session ID
+            current_chapter: Current narrative chapter
+            current_beat_index: Index of current beat
+            completed_beats: List of completed beat IDs
+            beat_history: List of beat execution history
+            
+        Returns:
+            Saved state model
+        """
+        # Try to find existing
+        result = await db.execute(
+            select(StoryDirectorStateModel)
+            .where(StoryDirectorStateModel.session_id == session_id)
+        )
+        existing = result.scalar_one_or_none()
+        
+        if existing:
+            existing.current_chapter = current_chapter
+            existing.current_beat_index = current_beat_index
+            existing.completed_beats = completed_beats
+            existing.beat_history = beat_history
+            await db.flush()
+            return existing
+        
+        # Create new
+        state = StoryDirectorStateModel(
+            session_id=session_id,
+            current_chapter=current_chapter,
+            current_beat_index=current_beat_index,
+            completed_beats=completed_beats,
+            beat_history=beat_history,
+        )
+        db.add(state)
+        await db.flush()
+        return state
+    
+    async def get_story_director_state(
+        self,
+        db: AsyncSession,
+        session_id: int,
+    ) -> Optional[StoryDirectorStateModel]:
+        """Get StoryDirector state for session.
+        
+        Args:
+            db: Database session
+            session_id: Session ID
+            
+        Returns:
+            State model or None
+        """
+        result = await db.execute(
+            select(StoryDirectorStateModel)
+            .where(StoryDirectorStateModel.session_id == session_id)
+        )
+        return result.scalar_one_or_none()
 
 
 # Singleton instance (will be initialized with config)

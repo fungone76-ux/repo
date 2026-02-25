@@ -292,7 +292,7 @@ Output:
         Returns:
             Workflow dict
         """
-        async with aiofiles.open(self.workflow_path, "r") as f:
+        async with aiofiles.open(self.workflow_path, "r", encoding="utf-8") as f:
             content = await f.read()
             return json.loads(content)
     
@@ -311,7 +311,7 @@ Output:
             temporal_prompt: Temporal motion description
             character_name: Character name
         """
-        # Find and patch nodes (node IDs may vary based on workflow)
+        # Find and patch nodes - MINIMAL patching to avoid breaking workflow
         for node_id, node in workflow.items():
             if not isinstance(node, dict):
                 continue
@@ -319,48 +319,29 @@ Output:
             inputs = node.get("inputs", {})
             class_type = node.get("class_type", "")
             
-            # Load image node - use filename only (not full path)
+            # Load image node - ONLY change the filename, nothing else
             if class_type == "LoadImage" and "image" in inputs:
                 inputs["image"] = image_filename
                 print(f"[Video] Set image to: {image_filename}")
             
-            # Text prompt node (temporal) - detect positive prompt node
-            # Positive prompt is typically longer and contains scene description
+            # ONLY patch the positive prompt (node 5 typically)
+            # Look for CLIPTextEncode that contains positive video prompt
             if class_type == "CLIPTextEncode" and "text" in inputs:
                 text = str(inputs.get("text", ""))
-                # Positive prompt: long, descriptive, contains video/scene words
-                # Negative prompt: shorter, contains "bad", "poor", "deformed"
+                # Only patch if it looks like a positive prompt (long, contains video keywords)
                 is_negative = any(word in text.lower() for word in 
-                    ["deformed", "bad anatomy", "poor quality", "ugly", "distorted"])
-                is_positive = len(text) > 100 and not is_negative
+                    ["deformed", "bad anatomy", "poor quality", "ugly", "distorted", "faded colors"])
+                is_positive = len(text) > 100 and not is_negative and any(kw in text.lower() for kw in ["video", "cinematic", "motion"])
                 
-                if is_positive or "0s:" in text or "motion" in text.lower():
+                if is_positive:
                     inputs["text"] = temporal_prompt
                     print(f"[Video] Set temporal prompt ({len(temporal_prompt)} chars)")
             
-            # Wan2.1 specific settings
-            if "Wan" in class_type:
-                # Resolution for Wan2.1: 512x768
-                if "width" in inputs:
-                    inputs["width"] = 512
-                if "height" in inputs:
-                    inputs["height"] = 768
-                if "frames" in inputs:
-                    inputs["frames"] = 81  # 81 frames = ~5 seconds
-            
-            # Seed
-            if "seed" in inputs:
-                inputs["seed"] = int(time.time()) % 1000000000
-        
-        # Filename prefix (VHS_VideoCombine or SaveImage/VideoSave)
-        for node_id, node in workflow.items():
-            class_type = node.get("class_type", "")
-            if class_type.startswith("SaveImage") or \
-               class_type.startswith("VideoSave") or \
-               class_type == "VHS_VideoCombine":
-                if "filename_prefix" in node.get("inputs", {}):
+            # Filename prefix for output
+            if class_type == "VHS_VideoCombine":
+                if "filename_prefix" in inputs:
                     prefix = character_name or "video"
-                    node["inputs"]["filename_prefix"] = f"{prefix}_Wan2.1"
+                    inputs["filename_prefix"] = f"{prefix}_Wan2.1"
                     print(f"[Video] Set filename prefix to: {prefix}_Wan2.1")
     
     async def _submit_workflow(

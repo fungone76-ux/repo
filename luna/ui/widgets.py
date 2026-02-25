@@ -19,8 +19,9 @@ class QuestTrackerWidget(QGroupBox):
 
     def __init__(self, parent=None) -> None:
         """Initialize quest tracker."""
-        super().__init__("📋 Quest Tracker", parent)
-        self.setMaximumHeight(250)
+        super().__init__("📋 Quest", parent)
+        self.setMaximumHeight(140)
+        self.setMinimumHeight(100)
 
         layout = QVBoxLayout(self)
 
@@ -82,6 +83,8 @@ class CompanionStatusWidget(QGroupBox):
     def __init__(self, parent=None) -> None:
         """Initialize companion status widget."""
         super().__init__("👥 Companions", parent)
+        self.setMinimumHeight(100)
+        self.setMaximumHeight(250)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -176,6 +179,8 @@ class GlobalEventWidget(QGroupBox):
     def __init__(self, parent=None) -> None:
         """Initialize event widget."""
         super().__init__("🌍 Event", parent)
+        self.setMaximumHeight(80)
+        self.setMinimumHeight(60)
 
         layout = QVBoxLayout(self)
 
@@ -295,9 +300,12 @@ class ImageDisplayWidget(QGroupBox):
 
     def __init__(self, parent=None) -> None:
         """Initialize image display."""
-        super().__init__("🖼️ Scene", parent)
+        super().__init__("🖼️ Scena", parent)
+        self.setMinimumWidth(380)
+        self.setMaximumWidth(580)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
 
         # Use interactive ImageViewer instead of static QLabel
         from luna.ui.image_viewer import ImageViewer
@@ -320,6 +328,8 @@ class OutfitWidget(QGroupBox):
     def __init__(self, parent=None) -> None:
         """Initialize outfit widget."""
         super().__init__("👗 Outfit", parent)
+        self.setMaximumHeight(120)
+        self.setMinimumHeight(90)
         
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -402,6 +412,8 @@ class LocationWidget(QGroupBox):
     def __init__(self, parent=None) -> None:
         """Initialize location widget."""
         super().__init__("📍 Location", parent)
+        self.setMaximumHeight(180)
+        self.setMinimumHeight(140)
         
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -478,3 +490,142 @@ class LocationWidget(QGroupBox):
         self.lbl_description.setText("No location data")
         self.lbl_state.setText("")
         self.list_exits.clear()
+
+
+class PersonalityArchetypeWidget(QGroupBox):
+    """Widget for displaying player personality archetype and impression stats."""
+    
+    def __init__(self, parent=None) -> None:
+        """Initialize personality widget."""
+        super().__init__("🎭 Personality Profile", parent)
+        self.setMaximumHeight(200)
+        self.setMinimumHeight(160)
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+        
+        # Archetype display
+        self.lbl_archetype = QLabel("Profile in Analysis...")
+        self.lbl_archetype.setStyleSheet("""
+            font-weight: bold; 
+            color: #FFD700; 
+            font-size: 13px;
+            padding: 4px;
+            background-color: #333;
+            border-radius: 4px;
+        """)
+        self.lbl_archetype.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.lbl_archetype)
+        
+        # Impression stats (5 dimensions)
+        self.stats_layout = QVBoxLayout()
+        self.stats_layout.setSpacing(4)
+        
+        self.stat_bars: Dict[str, QProgressBar] = {}
+        stat_configs = [
+            ("trust", "Trust", "#4CAF50"),
+            ("attraction", "Attraction", "#E91E63"),
+            ("fear", "Fear", "#9C27B0"),
+            ("curiosity", "Curiosity", "#2196F3"),
+            ("power", "Power Balance", "#FF9800"),
+        ]
+        
+        for key, label, color in stat_configs:
+            row = QHBoxLayout()
+            lbl = QLabel(f"{label}:")
+            lbl.setStyleSheet("color: #ccc; font-size: 10px; min-width: 70px;")
+            lbl.setAlignment(Qt.AlignRight)
+            row.addWidget(lbl)
+            
+            bar = QProgressBar()
+            bar.setRange(-100, 100)
+            bar.setValue(0)
+            bar.setFormat("%v")  # Mostra valore reale (-100 a 100), non percentuale
+            bar.setTextVisible(True)
+            bar.setMaximumHeight(16)
+            bar.setStyleSheet(f"""
+                QProgressBar {{
+                    background-color: #2d2d2d;
+                    border: 1px solid #444;
+                    border-radius: 3px;
+                    text-align: center;
+                    font-size: 9px;
+                    color: white;
+                }}
+                QProgressBar::chunk {{
+                    background-color: {color};
+                }}
+            """)
+            self.stat_bars[key] = bar
+            row.addWidget(bar, stretch=1)
+            self.stats_layout.addLayout(row)
+        
+        layout.addLayout(self.stats_layout)
+        
+        # Behavior hints
+        self.lbl_behaviors = QLabel("No behaviors detected yet")
+        self.lbl_behaviors.setStyleSheet("color: #888; font-size: 10px; font-style: italic;")
+        self.lbl_behaviors.setWordWrap(True)
+        layout.addWidget(self.lbl_behaviors)
+        
+        layout.addStretch()
+    
+    def set_archetype(self, archetype: Optional[str]) -> None:
+        """Update displayed archetype.
+        
+        Args:
+            archetype: Player archetype name or None
+        """
+        if archetype:
+            self.lbl_archetype.setText(f"🎭 {archetype}")
+        else:
+            self.lbl_archetype.setText("Profile in Analysis...")
+    
+    def set_impressions(
+        self,
+        trust: int = 0,
+        attraction: int = 0,
+        fear: int = 0,
+        curiosity: int = 0,
+        dominance_balance: int = 0,
+    ) -> None:
+        """Update impression bars.
+        
+        Args:
+            trust: Trust score (-100 to 100)
+            attraction: Attraction score (-100 to 100)
+            fear: Fear score (-100 to 100)
+            curiosity: Curiosity score (-100 to 100)
+            dominance_balance: Power balance (-100 = player dominant, +100 = NPC dominant)
+        """
+        self.stat_bars["trust"].setValue(trust)
+        self.stat_bars["attraction"].setValue(attraction)
+        self.stat_bars["fear"].setValue(fear)
+        self.stat_bars["curiosity"].setValue(curiosity)
+        self.stat_bars["power"].setValue(dominance_balance)
+        
+        # Update power balance label
+        if dominance_balance < -20:
+            self.stat_bars["power"].setFormat("You Dominant (%v)")
+        elif dominance_balance > 20:
+            self.stat_bars["power"].setFormat("NPC Dominant (%v)")
+        else:
+            self.stat_bars["power"].setFormat("Equal (%v)")
+    
+    def set_behaviors(self, behaviors: List[str]) -> None:
+        """Update detected behaviors display.
+        
+        Args:
+            behaviors: List of detected behavior names
+        """
+        if behaviors:
+            self.lbl_behaviors.setText(f"Detected: {', '.join(behaviors)}")
+        else:
+            self.lbl_behaviors.setText("No behaviors detected yet")
+    
+    def clear(self) -> None:
+        """Reset widget."""
+        self.lbl_archetype.setText("Profile in Analysis...")
+        for bar in self.stat_bars.values():
+            bar.setValue(0)
+        self.lbl_behaviors.setText("No behaviors detected yet")

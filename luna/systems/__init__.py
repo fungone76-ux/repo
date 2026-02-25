@@ -1,7 +1,7 @@
 """Game systems for Luna RPG v4.
 
 Game systems module providing quest management, personality tracking,
-and world loading capabilities.
+world loading, and gameplay mechanics.
 """
 from __future__ import annotations
 

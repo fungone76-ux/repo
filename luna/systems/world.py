@@ -28,6 +28,7 @@ from luna.core.models import (
     QuestStage,
     QuestTransition,
     ScheduleEntry,
+    WardrobeDefinition,
     StoryBeat,
     TimeOfDay,
     TimeSlot,
@@ -274,6 +275,8 @@ class WorldLoader:
                 "milestones": {},
                 "time": {},
                 "global_events": {},
+                "random_events": {},
+                "daily_events": {},
             }
             
             # Load _meta.yaml first
@@ -325,6 +328,36 @@ class WorldLoader:
                     # Merge global events
                     if "global_events" in file_data:
                         merged_data["global_events"].update(file_data["global_events"])
+                    
+                    # Merge random events (explorative, repeatable)
+                    if yaml_file.name == "random_events.yaml" and "events" in file_data:
+                        events_data = file_data["events"]
+                        if isinstance(events_data, dict):
+                            merged_data["random_events"].update(events_data)
+                        elif isinstance(events_data, list):
+                            for evt in events_data:
+                                if isinstance(evt, dict) and "id" in evt:
+                                    merged_data["random_events"][evt["id"]] = evt
+                    
+                    # Merge daily events (routine, time-based)
+                    if yaml_file.name == "daily_events.yaml" and "events" in file_data:
+                        daily_data = file_data["events"]
+                        if isinstance(daily_data, dict):
+                            merged_data["daily_events"].update(daily_data)
+                        elif isinstance(daily_data, list):
+                            for evt in daily_data:
+                                if isinstance(evt, dict) and "id" in evt:
+                                    merged_data["daily_events"][evt["id"]] = evt
+                    
+                    # Merge global events (narrative world events)
+                    if yaml_file.name == "global_events.yaml" and "events" in file_data:
+                        global_data = file_data["events"]
+                        if isinstance(global_data, dict):
+                            merged_data["global_events"].update(global_data)
+                        elif isinstance(global_data, list):
+                            for evt in global_data:
+                                if isinstance(evt, dict) and "id" in evt:
+                                    merged_data["global_events"][evt["id"]] = evt
                     
                     # Merge milestones from companion files
                     if "milestones" in file_data:
@@ -426,7 +459,7 @@ class WorldLoader:
                 time_slots[time_of_day] = TimeSlot(
                     time_of_day=time_of_day,
                     lighting=time_data.get("lighting", ""),
-                    ambient_description=time_data.get("description", ""),
+                    ambient_description=time_data.get("ambient_description", ""),
                 )
             except ValueError:
                 print(f"Warning: Invalid time slot: {time_key}")
@@ -475,33 +508,61 @@ class WorldLoader:
             except Exception as e:
                 print(f"Warning: Error processing endgame: {e}")
         
-        # Process global events
+        # Process global events (supports both rich and simple formats)
         global_events = {}
         for evt_id, evt_data in data.get("global_events", {}).items():
             try:
-                effects_data = evt_data.get("effects", {})
-                effects = GlobalEventEffect(
-                    duration=effects_data.get("duration", 3),
-                    location_modifiers=effects_data.get("location_modifiers", []),
-                    visual_tags=effects_data.get("visual_tags", []),
-                    atmosphere_change=effects_data.get("atmosphere_change", ""),
-                    affinity_multiplier=effects_data.get("affinity_multiplier", 1.0),
-                    on_start=effects_data.get("on_start", []),
-                    on_end=effects_data.get("on_end", []),
-                )
-                
-                trigger = evt_data.get("trigger", {})
-                global_events[evt_id] = GlobalEventDefinition(
-                    id=evt_id,
-                    title=evt_data.get("meta", {}).get("title", evt_id),
-                    description=evt_data.get("meta", {}).get("description", ""),
-                    trigger_type=trigger.get("type", "random"),
-                    trigger_chance=trigger.get("chance", 0.1),
-                    trigger_conditions=trigger.get("conditions", []),
-                    allowed_times=trigger.get("allowed_times", []),
-                    effects=effects,
-                    narrative_prompt=evt_data.get("narrative_prompt", ""),
-                )
+                # Handle both rich format (with meta, trigger, effects) and simple format
+                if isinstance(evt_data, dict):
+                    # Rich format with meta/trigger/effects
+                    if "meta" in evt_data or "trigger" in evt_data:
+                        effects_data = evt_data.get("effects", {})
+                        # Handle effects as list or dict
+                        if isinstance(effects_data, list):
+                            effects_data = {"on_start": effects_data}
+                        
+                        effects = GlobalEventEffect(
+                            duration=effects_data.get("duration", 3),
+                            location_modifiers=effects_data.get("location_modifiers", []),
+                            visual_tags=effects_data.get("visual_tags", []),
+                            atmosphere_change=effects_data.get("atmosphere_change", ""),
+                            affinity_multiplier=effects_data.get("affinity_multiplier", 1.0),
+                            on_start=effects_data.get("on_start", []),
+                            on_end=effects_data.get("on_end", []),
+                        )
+                        
+                        trigger = evt_data.get("trigger", {})
+                        meta = evt_data.get("meta", {})
+                        
+                        # Handle conditions at top level (legacy format) or in trigger
+                        conditions = evt_data.get("conditions", {})
+                        if conditions:
+                            # Convert legacy conditions format to trigger_conditions
+                            trigger_conditions = []
+                            if "location" in conditions:
+                                trigger_conditions.append({"location": conditions["location"]})
+                            if "location_not" in conditions:
+                                trigger_conditions.append({"location_not": conditions["location_not"]})
+                            allowed_times = conditions.get("time", [])
+                        else:
+                            trigger_conditions = trigger.get("conditions", [])
+                            allowed_times = trigger.get("allowed_times", [])
+                        
+                        global_events[evt_id] = GlobalEventDefinition(
+                            id=evt_id,
+                            title=meta.get("title", evt_id),
+                            description=meta.get("description", ""),
+                            trigger_type=trigger.get("type", "random"),
+                            trigger_chance=trigger.get("chance", 0.1),
+                            trigger_conditions=trigger_conditions,
+                            allowed_times=allowed_times,
+                            effects=effects,
+                            narrative_prompt=evt_data.get("narrative_prompt", evt_data.get("narrative", "")),
+                        )
+                    else:
+                        # Simple format - store as raw data for future processing
+                        # Skip for now as these are handled by random_events/daily_events
+                        pass
             except Exception as e:
                 print(f"Warning: Error processing global event {evt_id}: {e}")
         
@@ -526,6 +587,8 @@ class WorldLoader:
             milestones=milestones,
             endgame=endgame,
             global_events=global_events,
+            random_events=data.get("random_events", {}),
+            daily_events=data.get("daily_events", {}),
             player_character=player_character,
         )
     
@@ -550,6 +613,25 @@ class WorldLoader:
         
         # Get personality system data
         personality = data.get("personality_system", {})
+        core_traits = personality.get("core_traits", {})
+        
+        # Process wardrobe - convert dict to WardrobeDefinition
+        raw_wardrobe = data.get("wardrobe", {})
+        wardrobe = {}
+        for style_name, style_data in raw_wardrobe.items():
+            if isinstance(style_data, str):
+                # Legacy format: just a description string
+                wardrobe[style_name] = WardrobeDefinition(description=style_data)
+            elif isinstance(style_data, dict):
+                # New format: dict with description, sd_prompt, etc.
+                wardrobe[style_name] = WardrobeDefinition(
+                    description=style_data.get("description", ""),
+                    sd_prompt=style_data.get("sd_prompt", ""),
+                    special=style_data.get("special", False),
+                )
+            else:
+                # Already a WardrobeDefinition or unknown type
+                wardrobe[style_name] = style_data
         
         return CompanionDefinition(
             name=name,
@@ -558,9 +640,11 @@ class WorldLoader:
             base_personality=data.get("base_personality", ""),
             base_prompt=data.get("base_prompt", ""),
             default_outfit=data.get("default_outfit", "default"),
-            wardrobe=data.get("wardrobe", {}),
+            wardrobe=wardrobe,
             emotional_states=personality.get("emotional_states", {}),
             affinity_tiers=personality.get("affinity_tiers", {}),
+            background=core_traits.get("background", ""),
+            relationship_to_player=core_traits.get("relationship_to_player", ""),
             dialogue_tone=data.get("dialogue_tone", {}),
             schedule=schedule,
             relations=data.get("relations", {}),

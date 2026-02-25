@@ -1,0 +1,1011 @@
+"""Gameplay Manager - Orchestrates all gameplay systems.
+
+Coordinates the 9 gameplay systems and integrates them with the game engine.
+Provides a unified API for game mechanics.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Type
+
+from luna.core.models import GameState, WorldDefinition
+from luna.systems.gameplay.base import GameplayEvent, GameplaySystem
+from luna.systems.gameplay.affinity import AffinitySystem
+from luna.systems.gameplay.combat import CombatEntity
+from luna.systems.gameplay.combat import CombatSystem
+from luna.systems.gameplay.inventory import InventorySystem, Item
+from luna.systems.gameplay.economy import EconomySystem
+from luna.systems.gameplay.skills import SkillsSystem
+from luna.systems.gameplay.reputation import ReputationSystem
+from luna.systems.gameplay.clues import ClueSystem
+from luna.systems.gameplay.survival import SurvivalSystem
+from luna.systems.gameplay.morality import MoralitySystem
+from luna.systems.dynamic_events import DynamicEventManager, EventResult, EventInstance
+
+
+class GameplayAction:
+    """Represents an available action to the player."""
+    
+    def __init__(
+        self,
+        action_id: str,
+        name: str,
+        description: str,
+        category: str,  # "social", "combat", "item", "movement", "quest"
+        icon: str = "🎯",
+        enabled: bool = True,
+        cooldown: int = 0,
+        requires_target: bool = False,
+        target_type: Optional[str] = None,  # "companion", "location", "item"
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.action_id = action_id
+        self.name = name
+        self.description = description
+        self.category = category
+        self.icon = icon
+        self.enabled = enabled
+        self.cooldown = cooldown
+        self.requires_target = requires_target
+        self.target_type = target_type
+        self.metadata = metadata or {}
+        self.current_cooldown: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "action_id": self.action_id,
+            "name": self.name,
+            "description": self.description,
+            "category": self.category,
+            "icon": self.icon,
+            "enabled": self.enabled,
+            "cooldown": self.cooldown,
+            "requires_target": self.requires_target,
+            "target_type": self.target_type,
+            "metadata": self.metadata,
+        }
+
+
+class GameplayResult:
+    """Result of a gameplay action."""
+    
+    def __init__(
+        self,
+        success: bool,
+        message: str = "",
+        events: Optional[List[GameplayEvent]] = None,
+        affinity_changes: Optional[Dict[str, int]] = None,
+        items_gained: Optional[List[Item]] = None,
+        items_lost: Optional[List[str]] = None,
+        money_change: int = 0,
+        flags_set: Optional[Dict[str, Any]] = None,
+        unlocked_actions: Optional[List[str]] = None,
+    ) -> None:
+        self.success = success
+        self.message = message
+        self.events = events or []
+        self.affinity_changes = affinity_changes or {}
+        self.items_gained = items_gained or []
+        self.items_lost = items_lost or []
+        self.money_change = money_change
+        self.flags_set = flags_set or {}
+        self.unlocked_actions = unlocked_actions or []
+
+
+class GameplayManager:
+    """Manages all gameplay systems and provides unified API.
+    
+    This is the bridge between the game engine and the gameplay systems.
+    It coordinates interactions between systems and provides context-aware
+    action availability.
+    """
+    
+    # System registry
+    SYSTEM_CLASSES: Dict[str, Type[GameplaySystem]] = {
+        "affinity": AffinitySystem,
+        "combat": CombatSystem,
+        "inventory": InventorySystem,
+        "economy": EconomySystem,
+        "skills": SkillsSystem,
+        "reputation": ReputationSystem,
+        "clues": ClueSystem,
+        "survival": SurvivalSystem,
+        "morality": MoralitySystem,
+    }
+    
+    def __init__(self, world: WorldDefinition) -> None:
+        """Initialize gameplay manager with world configuration.
+        
+        Args:
+            world: World definition with gameplay_systems config
+        """
+        self.world = world
+        self._systems: Dict[str, GameplaySystem] = {}
+        self._available_actions: List[GameplayAction] = []
+        self._action_history: List[Dict[str, Any]] = []
+        
+        self._initialize_systems()
+        
+        # Initialize dynamic events system
+        self.event_manager = DynamicEventManager(world)
+        
+        self._update_available_actions()
+    
+    def _initialize_systems(self) -> None:
+        """Initialize all gameplay systems based on world config."""
+        gameplay_config = getattr(self.world, 'gameplay_systems', None)
+        
+        if not gameplay_config:
+            # Default: enable only affinity system
+            gameplay_config = {"affinity": {"enabled": True}}
+        
+        for system_name, system_class in self.SYSTEM_CLASSES.items():
+            config = gameplay_config.get(system_name, {}) if gameplay_config else {}
+            
+            # Check if system is enabled
+            if config and config.get("enabled", True):
+                try:
+                    system = system_class(config)
+                    self._systems[system_name] = system
+                    print(f"[GameplayManager] Initialized: {system_name}")
+                except Exception as e:
+                    print(f"[GameplayManager] Failed to init {system_name}: {e}")
+    
+    # ========================================================================
+    # System Access
+    # ========================================================================
+    
+    def get_system(self, name: str) -> Optional[GameplaySystem]:
+        """Get a gameplay system by name."""
+        return self._systems.get(name)
+    
+    def has_system(self, name: str) -> bool:
+        """Check if a system is active."""
+        system = self._systems.get(name)
+        return system is not None and system.is_active
+    
+    @property
+    def affinity(self) -> Optional[AffinitySystem]:
+        """Get affinity system."""
+        return self._systems.get("affinity")  # type: ignore
+    
+    @property
+    def combat(self) -> Optional[CombatSystem]:
+        """Get combat system."""
+        return self._systems.get("combat")  # type: ignore
+    
+    @property
+    def inventory(self) -> Optional[InventorySystem]:
+        """Get inventory system."""
+        return self._systems.get("inventory")  # type: ignore
+    
+    @property
+    def economy(self) -> Optional[EconomySystem]:
+        """Get economy system."""
+        return self._systems.get("economy")  # type: ignore
+    
+    @property
+    def skills(self) -> Optional[SkillsSystem]:
+        """Get skills system."""
+        return self._systems.get("skills")  # type: ignore
+    
+    @property
+    def reputation(self) -> Optional[ReputationSystem]:
+        """Get reputation system."""
+        return self._systems.get("reputation")  # type: ignore
+    
+    @property
+    def clues(self) -> Optional[ClueSystem]:
+        """Get clues system."""
+        return self._systems.get("clues")  # type: ignore
+    
+    # ========================================================================
+    # Action System
+    # ========================================================================
+    
+    def get_available_actions(
+        self,
+        game_state: GameState,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[GameplayAction]:
+        """Get all available actions for current context.
+        
+        Args:
+            game_state: Current game state
+            context: Additional context (e.g., nearby NPCs, items)
+            
+        Returns:
+            List of available actions
+        """
+        actions: List[GameplayAction] = []
+        companion = game_state.active_companion
+        location = game_state.current_location
+        
+        # Social actions based on affinity
+        if self.has_system("affinity") and companion:
+            actions.extend(self._get_social_actions(companion))
+        
+        # Inventory actions
+        if self.has_system("inventory"):
+            actions.extend(self._get_inventory_actions())
+        
+        # Combat actions
+        if self.has_system("combat"):
+            actions.extend(self._get_combat_actions())
+        
+        # Economy actions (if in shop location)
+        if self.has_system("economy"):
+            actions.extend(self._get_economy_actions(location))
+        
+        # Movement actions
+        actions.extend(self._get_movement_actions(game_state))
+        
+        return actions
+    
+    def _get_social_actions(self, companion: str) -> List[GameplayAction]:
+        """Get social actions based on affinity."""
+        actions = []
+        affinity_system = self.affinity
+        
+        if not affinity_system:
+            return actions
+        
+        # Always available
+        actions.append(GameplayAction(
+            action_id="chat",
+            name="Chat",
+            description=f"Talk with {companion}",
+            category="social",
+            icon="💬",
+        ))
+        
+        # Check unlocked actions
+        if affinity_system.can_perform_action(companion, "flirt"):
+            actions.append(GameplayAction(
+                action_id="flirt",
+                name="Flirt",
+                description=f"Flirt with {companion}",
+                category="social",
+                icon="😘",
+                requires_target=True,
+                target_type="companion",
+            ))
+        
+        if affinity_system.can_perform_action(companion, "gift"):
+            actions.append(GameplayAction(
+                action_id="gift",
+                name="Give Gift",
+                description=f"Give a gift to {companion}",
+                category="social",
+                icon="🎁",
+                requires_target=True,
+                target_type="item",
+            ))
+        
+        if affinity_system.can_perform_action(companion, "hug"):
+            actions.append(GameplayAction(
+                action_id="hug",
+                name="Hug",
+                description=f"Hug {companion}",
+                category="social",
+                icon="🤗",
+            ))
+        
+        if affinity_system.can_perform_action(companion, "kiss"):
+            actions.append(GameplayAction(
+                action_id="kiss",
+                name="Kiss",
+                description=f"Kiss {companion}",
+                category="social",
+                icon="💋",
+            ))
+        
+        return actions
+    
+    def _get_inventory_actions(self) -> List[GameplayAction]:
+        """Get inventory-related actions."""
+        actions = []
+        inventory = self.inventory
+        
+        if not inventory:
+            return actions
+        
+        # Add actions for usable items
+        for item in inventory._items.values():
+            if item.usable:
+                actions.append(GameplayAction(
+                    action_id=f"use_{item.item_id}",
+                    name=f"Use {item.name}",
+                    description=item.description,
+                    category="item",
+                    icon="🧪" if item.category == "consumable" else "📦",
+                    metadata={"item_id": item.item_id},
+                ))
+        
+        return actions
+    
+    def _get_combat_actions(self) -> List[GameplayAction]:
+        """Get combat actions if in combat."""
+        actions = []
+        combat = self.combat
+        
+        # Handle both enum and string state
+        combat_state = combat.state.value if hasattr(combat.state, 'value') else str(combat.state)
+        if not combat or combat_state == "inactive":
+            return actions
+        
+        actions.append(GameplayAction(
+            action_id="combat_attack",
+            name="Attack",
+            description="Attack the enemy",
+            category="combat",
+            icon="⚔️",
+            requires_target=True,
+            target_type="enemy",
+        ))
+        
+        actions.append(GameplayAction(
+            action_id="combat_defend",
+            name="Defend",
+            description="Defend against attacks",
+            category="combat",
+            icon="🛡️",
+        ))
+        
+        actions.append(GameplayAction(
+            action_id="combat_escape",
+            name="Escape",
+            description="Try to escape from combat",
+            category="combat",
+            icon="🏃",
+        ))
+        
+        return actions
+    
+    def _get_economy_actions(self, location: str) -> List[GameplayAction]:
+        """Get economy actions (shop, etc)."""
+        actions = []
+        economy = self.economy
+        
+        if not economy:
+            return actions
+        
+        # Check if location has a shop
+        shops = economy._shops.keys()
+        if location.lower() in shops or "shop" in location.lower():
+            actions.append(GameplayAction(
+                action_id="shop_buy",
+                name="Buy Items",
+                description="Browse shop items",
+                category="economy",
+                icon="🛒",
+            ))
+        
+        return actions
+    
+    def _get_movement_actions(self, game_state: GameState) -> List[GameplayAction]:
+        """Get movement actions based on location."""
+        actions = []
+        
+        # Movement is always available but context-aware
+        actions.append(GameplayAction(
+            action_id="move",
+            name="Move",
+            description="Go to another location",
+            category="movement",
+            icon="🚶",
+            requires_target=True,
+            target_type="location",
+        ))
+        
+        return actions
+    
+    def execute_action(
+        self,
+        action_id: str,
+        game_state: GameState,
+        target: Optional[str] = None,
+    ) -> GameplayResult:
+        """Execute a gameplay action.
+        
+        Args:
+            action_id: Action to execute
+            game_state: Current game state
+            target: Optional target
+            
+        Returns:
+            Gameplay result with changes
+        """
+        # Social actions
+        if action_id in ["chat", "flirt", "gift", "hug", "kiss"]:
+            return self._execute_social_action(action_id, game_state, target)
+        
+        # Combat actions
+        if action_id.startswith("combat_"):
+            return self._execute_combat_action(action_id, target)
+        
+        # Item actions
+        if action_id.startswith("use_"):
+            item_id = action_id.replace("use_", "")
+            return self._execute_item_action(item_id)
+        
+        return GameplayResult(
+            success=False,
+            message=f"Unknown action: {action_id}",
+        )
+    
+    def _execute_social_action(
+        self,
+        action_id: str,
+        game_state: GameState,
+        target: Optional[str],
+    ) -> GameplayResult:
+        """Execute a social action."""
+        companion = game_state.active_companion
+        affinity_system = self.affinity
+        
+        if not companion or not affinity_system:
+            return GameplayResult(success=False, message="No companion available")
+        
+        # Base affinity changes
+        affinity_changes = {companion: 0}
+        messages = []
+        
+        if action_id == "chat":
+            affinity_changes[companion] = 1
+            messages.append(f"You chat with {companion}")
+        
+        elif action_id == "flirt":
+            # Check if unlocked
+            if affinity_system.can_perform_action(companion, "flirt"):
+                affinity_changes[companion] = 3
+                messages.append(f"You flirt with {companion}")
+            else:
+                return GameplayResult(
+                    success=False,
+                    message=f"{companion} is not interested in flirting yet",
+                )
+        
+        elif action_id == "gift":
+            if target and self.inventory and self.inventory.has_item(target):
+                item = self.inventory._items.get(target)
+                if item:
+                    affinity_changes[companion] = 5
+                    self.inventory.remove_item(target)
+                    messages.append(f"You give {item.name} to {companion}")
+            else:
+                return GameplayResult(
+                    success=False,
+                    message="You don't have that item",
+                )
+        
+        elif action_id == "hug":
+            if affinity_system.can_perform_action(companion, "hug"):
+                affinity_changes[companion] = 2
+                messages.append(f"You hug {companion}")
+            else:
+                return GameplayResult(
+                    success=False,
+                    message=f"{companion} is not comfortable with hugging yet",
+                )
+        
+        elif action_id == "kiss":
+            if affinity_system.can_perform_action(companion, "kiss"):
+                affinity_changes[companion] = 5
+                messages.append(f"You kiss {companion}")
+            else:
+                return GameplayResult(
+                    success=False,
+                    message=f"{companion} is not ready for that yet",
+                )
+        
+        # Apply affinity changes
+        for char, amount in affinity_changes.items():
+            if amount != 0:
+                new_val, tier_changed = affinity_system.change_affinity(
+                    char, amount, f"action:{action_id}"
+                )
+                if tier_changed:
+                    messages.append(f"💕 Affinity tier changed with {char}!")
+        
+        return GameplayResult(
+            success=True,
+            message="\n".join(messages),
+            affinity_changes=affinity_changes,
+        )
+    
+    def _execute_combat_action(self, action_id: str, target: Optional[str]) -> GameplayResult:
+        """Execute a combat action."""
+        combat = self.combat
+        
+        if not combat:
+            return GameplayResult(success=False, message="Combat system not available")
+        
+        if action_id == "combat_attack":
+            # Find enemy
+            for i, entity in enumerate(combat.entities):
+                if not entity.is_player:
+                    result = combat.execute_action("attack", 0, i)
+                    return GameplayResult(
+                        success=result["success"],
+                        message=result["message"],
+                    )
+        
+        elif action_id == "combat_defend":
+            return GameplayResult(
+                success=True,
+                message="You take a defensive stance",
+            )
+        
+        elif action_id == "combat_escape":
+            combat.state = CombatSystem.CombatState.ESCAPED  # type: ignore
+            return GameplayResult(
+                success=True,
+                message="You escape from combat",
+            )
+        
+        return GameplayResult(success=False, message="Combat action failed")
+    
+    def _execute_item_action(self, item_id: str) -> GameplayResult:
+        """Execute an item use action."""
+        inventory = self.inventory
+        
+        if not inventory:
+            return GameplayResult(success=False, message="Inventory not available")
+        
+        effects = inventory.use_item(item_id)
+        
+        if effects:
+            item = inventory._items.get(item_id)
+            item_name = item.name if item else item_id
+            return GameplayResult(
+                success=True,
+                message=f"You use {item_name}",
+                items_lost=[item_id],
+            )
+        
+        return GameplayResult(success=False, message="Cannot use that item")
+    
+    def _update_available_actions(self) -> None:
+        """Update the list of available actions."""
+        # This will be called when state changes
+        pass
+    
+    # ========================================================================
+    # Integration Helpers
+    # ========================================================================
+    
+    def on_turn_end(self, game_state: GameState) -> List[GameplayEvent]:
+        """Process end-of-turn updates for all systems.
+        
+        Args:
+            game_state: Current game state
+            
+        Returns:
+            List of gameplay events
+        """
+        events: List[GameplayEvent] = []
+        
+        # Update each system
+        for name, system in self._systems.items():
+            if system.is_active:
+                system.update(1.0)  # 1 turn = 1 time unit
+        
+        # Update dynamic events (cooldowns, etc.)
+        self.event_manager.on_turn_end(game_state)
+        
+        return events
+    
+    def get_status_summary(self) -> Dict[str, Any]:
+        """Get summary of all system statuses."""
+        summary = {}
+        
+        for name, system in self._systems.items():
+            summary[name] = {
+                "active": system.is_active,
+                "state": system.to_dict(),
+            }
+        
+        return summary
+    
+    # ========================================================================
+    # System Integration Helpers
+    # ========================================================================
+    
+    def buy_item(self, item_id: str, shop_id: str = "default") -> GameplayResult:
+        """Buy an item from a shop.
+        
+        Integrates Economy + Inventory systems.
+        
+        Args:
+            item_id: Item to buy
+            shop_id: Shop identifier
+            
+        Returns:
+            Gameplay result
+        """
+        if not self.has_system("economy"):
+            return GameplayResult(success=False, message="Economy system not available")
+        
+        if not self.has_system("inventory"):
+            return GameplayResult(success=False, message="Inventory system not available")
+        
+        economy = self.economy
+        inventory = self.inventory
+        
+        # Get price
+        price = economy.get_price(item_id)
+        if price is None:
+            return GameplayResult(success=False, message="Item not available in shop")
+        
+        # Check funds
+        if not economy.can_afford(price):
+            return GameplayResult(
+                success=False,
+                message=f"Not enough {economy.currency}. Need {price}, have {economy.balance}",
+            )
+        
+        # Check inventory space
+        if inventory.is_full:
+            return GameplayResult(success=False, message="Inventory is full")
+        
+        # Execute transaction
+        economy.remove_money(price, f"Bought {item_id}")
+        
+        # Create and add item
+        shop_items = economy.get_shop_items(shop_id)
+        shop_item = next((i for i in shop_items if i.item_id == item_id), None)
+        
+        if shop_item:
+            from luna.systems.gameplay.inventory import Item
+            new_item = Item(
+                item_id=item_id,
+                name=shop_item.name,
+                description=shop_item.description,
+            )
+            inventory.add_item(new_item)
+            
+            return GameplayResult(
+                success=True,
+                message=f"Purchased {shop_item.name} for {price} {economy.currency}",
+                items_gained=[new_item],
+                money_change=-price,
+            )
+        
+        return GameplayResult(success=False, message="Transaction failed")
+    
+    def sell_item(self, item_id: str) -> GameplayResult:
+        """Sell an item from inventory.
+        
+        Integrates Inventory + Economy systems.
+        
+        Args:
+            item_id: Item to sell
+            
+        Returns:
+            Gameplay result
+        """
+        if not self.has_system("inventory"):
+            return GameplayResult(success=False, message="Inventory system not available")
+        
+        if not self.has_system("economy"):
+            return GameplayResult(success=False, message="Economy system not available")
+        
+        inventory = self.inventory
+        economy = self.economy
+        
+        # Check if item exists
+        if not inventory.has_item(item_id):
+            return GameplayResult(success=False, message="Item not in inventory")
+        
+        # Get sell price
+        sell_price = economy.sell_item(item_id)
+        
+        if sell_price > 0:
+            # Remove from inventory
+            item = inventory._items.get(item_id)
+            item_name = item.name if item else item_id
+            inventory.remove_item(item_id)
+            
+            return GameplayResult(
+                success=True,
+                message=f"Sold {item_name} for {sell_price} {economy.currency}",
+                items_lost=[item_id],
+                money_change=sell_price,
+            )
+        
+        return GameplayResult(success=False, message="Item cannot be sold")
+    
+    def use_skill_in_combat(self, skill_id: str, target: Optional[str] = None) -> GameplayResult:
+        """Use a skill in combat.
+        
+        Integrates Skills + Combat systems.
+        
+        Args:
+            skill_id: Skill to use
+            target: Optional target
+            
+        Returns:
+            Gameplay result
+        """
+        if not self.has_system("skills"):
+            return GameplayResult(success=False, message="Skills system not available")
+        
+        if not self.has_system("combat"):
+            return GameplayResult(success=False, message="Combat system not available")
+        
+        skills = self.skills
+        combat = self.combat
+        
+        # Check if combat is active
+        combat_state = combat.state.value if hasattr(combat.state, 'value') else str(combat.state)
+        if combat_state == "inactive":
+            return GameplayResult(success=False, message="Not in combat")
+        
+        # Get skill
+        skill = skills.get_skill(skill_id)
+        if not skill:
+            return GameplayResult(success=False, message="Skill not found")
+        
+        # Check if unlocked
+        if not skills.has_skill(skill_id):
+            return GameplayResult(success=False, message="Skill not unlocked")
+        
+        # Use skill (apply effects)
+        if skills.use_skill(skill_id):
+            # Apply combat effects based on skill
+            effects = []
+            
+            # Example: damage skill
+            if "damage" in skill_id.lower():
+                # Find enemy and deal damage
+                for i, entity in enumerate(combat.entities):
+                    if not entity.is_player:
+                        damage = skill.level * 10  # Base damage based on skill level
+                        entity.take_damage(damage)
+                        effects.append(f"Dealt {damage} damage to {entity.name}")
+                        break
+            
+            return GameplayResult(
+                success=True,
+                message=f"Used {skill.name}\n" + "\n".join(effects),
+            )
+        
+        return GameplayResult(success=False, message="Failed to use skill")
+    
+    def discover_clue(self, clue_id: str) -> GameplayResult:
+        """Discover a clue.
+        
+        Integrates Clues system (can trigger quest updates).
+        
+        Args:
+            clue_id: Clue to discover
+            
+        Returns:
+            Gameplay result
+        """
+        if not self.has_system("clues"):
+            return GameplayResult(success=False, message="Clues system not available")
+        
+        clues = self.clues
+        
+        if clues.discover_clue(clue_id):
+            clue = clues.get_clue(clue_id)
+            if clue:
+                return GameplayResult(
+                    success=True,
+                    message=f"Discovered clue: {clue.name}",
+                    flags_set={f"clue_{clue_id}": True},
+                )
+        
+        return GameplayResult(success=False, message="Clue not found")
+    
+    def check_clue_for_quest(self, clue_id: str, quest_id: str) -> bool:
+        """Check if a clue is related to a quest.
+        
+        Integration helper between Clues and Quest systems.
+        
+        Args:
+            clue_id: Clue identifier
+            quest_id: Quest identifier
+            
+        Returns:
+            True if related
+        """
+        if not self.has_system("clues"):
+            return False
+        
+        clues = self.clues
+        clue = clues.get_clue(clue_id)
+        
+        if clue and clue.related_quest_id == quest_id:
+            return True
+        
+        return False
+    
+    def add_reputation(self, faction: str, amount: int, reason: str = "") -> GameplayResult:
+        """Add reputation with a faction.
+        
+        Can affect available quests and prices.
+        
+        Args:
+            faction: Faction name
+            amount: Reputation change
+            reason: Reason for change
+            
+        Returns:
+            Gameplay result
+        """
+        if not self.has_system("reputation"):
+            return GameplayResult(success=False, message="Reputation system not available")
+        
+        reputation = self.reputation
+        old_level = reputation.get_faction_level(faction)
+        
+        new_rep = reputation.add_reputation(faction, amount, reason)
+        new_level = reputation.get_faction_level(faction)
+        
+        messages = [f"Reputation with {faction}: {'+' if amount > 0 else ''}{amount}"]
+        unlocked = []
+        
+        # Check for level change
+        if old_level != new_level:
+            messages.append(f"Faction level changed: {old_level.name} → {new_level.name}")
+            
+            # Check unlocked benefits
+            standing = reputation.get_faction_standing(faction)
+            if standing:
+                benefits = standing.get_benefits()
+                if benefits.discount_multiplier < 1.0:
+                    discount = int((1 - benefits.discount_multiplier) * 100)
+                    unlocked.append(f"{discount}% shop discount")
+                if benefits.special_access:
+                    unlocked.append("Special area access")
+        
+        return GameplayResult(
+            success=True,
+            message="\n".join(messages),
+            unlocked_actions=unlocked,
+        )
+    
+    def get_shop_prices_with_reputation(self, shop_faction: str) -> Dict[str, int]:
+        """Get shop prices modified by reputation.
+        
+        Integrates Economy + Reputation systems.
+        
+        Args:
+            shop_faction: Faction that owns the shop
+            
+        Returns:
+            Dict of item_id -> modified price
+        """
+        if not self.has_system("economy"):
+            return {}
+        
+        prices = {}
+        economy = self.economy
+        
+        # Get base prices
+        base_prices = economy.config.get("prices", {})
+        
+        # Apply reputation discount if available
+        multiplier = 1.0
+        if self.has_system("reputation"):
+            standing = self.reputation.get_faction_standing(shop_faction)
+            if standing:
+                benefits = standing.get_benefits()
+                multiplier = benefits.discount_multiplier
+        
+        # Calculate final prices
+        for item_id, base_price in base_prices.items():
+            prices[item_id] = int(base_price * multiplier)
+        
+        return prices
+    
+    def start_combat_encounter(
+        self,
+        enemy_name: str,
+        enemy_hp: int = 50,
+        enemy_stats: Optional[Dict[str, int]] = None,
+    ) -> GameplayResult:
+        """Start a combat encounter.
+        
+        Integrates Combat + Skills (for available combat skills).
+        
+        Args:
+            enemy_name: Enemy name
+            enemy_hp: Enemy HP
+            enemy_stats: Enemy stats
+            
+        Returns:
+            Gameplay result
+        """
+        if not self.has_system("combat"):
+            return GameplayResult(success=False, message="Combat system not available")
+        
+        combat = self.combat
+        
+        # Create player entity
+        player = CombatEntity(
+            entity_id="player",
+            name="Player",
+            hp=100,
+            max_hp=100,
+            is_player=True,
+        )
+        
+        # Create enemy
+        enemy = CombatEntity(
+            entity_id="enemy_1",
+            name=enemy_name,
+            hp=enemy_hp,
+            max_hp=enemy_hp,
+            stats=enemy_stats or {"strength": 10, "agility": 10, "defense": 5},
+        )
+        
+        # Start combat
+        combat.start_combat(player, [enemy])
+        
+        return GameplayResult(
+            success=True,
+            message=f"Combat started! {enemy_name} appears!",
+        )
+    
+    # ========================================================================
+    # Dynamic Events Integration
+    # ========================================================================
+    
+    def check_dynamic_event(self, game_state: GameState) -> Optional[EventInstance]:
+        """Check for random or daily event.
+        
+        Args:
+            game_state: Current game state
+            
+        Returns:
+            Event instance if one triggers, None otherwise
+        """
+        return self.event_manager.check_for_event(game_state)
+    
+    def has_pending_event(self) -> bool:
+        """Check if there's a pending event waiting for player choice."""
+        return self.event_manager.get_current_event() is not None
+    
+    def get_pending_event(self) -> Optional[EventInstance]:
+        """Get current pending event if any."""
+        return self.event_manager.get_current_event()
+    
+    def process_event_choice(
+        self,
+        choice_index: int,
+        game_state: GameState,
+    ) -> EventResult:
+        """Process player choice for current event.
+        
+        Args:
+            choice_index: Index of chosen option (0-based)
+            game_state: Current game state
+            
+        Returns:
+            EventResult with effects applied
+        """
+        return self.event_manager.process_choice(choice_index, game_state)
+    
+    def skip_current_event(self) -> None:
+        """Skip current event without choosing."""
+        self.event_manager.skip_event()
+    
+    # ========================================================================
+    # Serialization
+    # ========================================================================
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize all systems."""
+        return {
+            name: system.to_dict()
+            for name, system in self._systems.items()
+        }
+    
+    def from_dict(self, data: Dict[str, Any]) -> None:
+        """Restore all systems from save."""
+        for name, system_data in data.items():
+            if name in self._systems:
+                self._systems[name].from_dict(system_data)

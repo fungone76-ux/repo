@@ -1,6 +1,7 @@
 """Prompt builders for LLM requests.
 
 Provides structured system prompts and JSON schemas for consistent LLM responses.
+NOTE: This module is deprecated. Use PromptBuilder from core.prompt_builder instead.
 """
 from __future__ import annotations
 
@@ -18,6 +19,8 @@ def build_system_prompt(
 ) -> str:
     """Build complete system prompt for LLM.
     
+    DEPRECATED: Use PromptBuilder.build_system_prompt() instead.
+    
     Args:
         world_context: World lore, setting, genre
         companion_context: Active companion personality, backstory
@@ -29,11 +32,32 @@ def build_system_prompt(
     Returns:
         Complete system prompt
     """
+    # Delegate to the main prompt builder logic
+    # This ensures consistency across the codebase
     sections = [
         "=== LUNA RPG - SYSTEM INSTRUCTIONS ===",
         "",
-        "You are a narrative AI for a visual novel/RPG game.",
-        "Write engaging, character-driven scenes in Italian.",
+        "You are the Game Master of a visual novel/RPG game.",
+        "NARRATE in ITALIAN LANGUAGE (the game is in Italian).",
+        "",
+        "=== CRITICAL RULES (DO NOT BREAK) ===",
+        "1. NEVER repeat or echo what the player just said.",
+        "2. NEVER describe the player's actions - only describe NPC actions and reactions.",
+        "3. NPC DIALOGUE goes in quotes: \"Cosa vuoi?\"",
+        "4. NPC ACTIONS go in third person with asterisks: *Luna crosses her arms.*",
+        "5. NEVER use first person (I/me/my) - you are the Game Master, not a character.",
+        "6. NEVER write 'You see...' or 'You feel...' - that's god-moding the player.",
+        "7. Player input = THEIR action. Your response = NPC reaction ONLY.",
+        "",
+        "=== WRONG vs RIGHT EXAMPLES ===",
+        "",
+        "Player: 'Vado in segreteria' (I go to the office)",
+        "❌ WRONG: 'Vado verso la segreteria...' (You speak as the player!)",
+        "❌ WRONG: 'Vedi che la porta è aperta...' (You describe what player sees!)",
+        "❌ WRONG: 'Io mi chiamo Enrico...' (NPC speaking as player!)",
+        "",
+        "✅ RIGHT: \"Dove vai?\" *Maria crosses her arms blocking the way.* \"Non puoi entrare.\"",
+        "✅ RIGHT: *Luna turns around.* \"Ah, the new student.\" *She looks you up and down.*",
         "",
         "=== WORLD CONTEXT ===",
         world_context,
@@ -74,15 +98,6 @@ def build_system_prompt(
         "Respond with valid JSON matching this schema:",
         json.dumps(get_response_schema(), indent=2),
         "",
-        "=== RULES ===",
-        "1. text: Narrative in Italian (2-4 paragraphs)",
-        "2. visual_en: Detailed visual description for image generation",
-        "3. tags_en: SD tags for image generation (array of strings)",
-        "4. updates: Suggest state changes (affinity, outfit, location)",
-        "5. Affinity changes clamped to -5/+5 per turn",
-        "6. Outfits must exist in character wardrobe",
-        "7. Locations must be valid world locations",
-        "",
         "=== END INSTRUCTIONS ===",
     ])
     
@@ -100,17 +115,17 @@ def get_response_schema() -> Dict[str, Any]:
         "properties": {
             "text": {
                 "type": "string",
-                "description": "Narrative text in Italian (2-4 paragraphs)",
-                "minLength": 50,
+                "description": "Narrative text in Italian (1-3 short sentences). NPC dialogue in quotes, actions in asterisks.",
+                "minLength": 10,
             },
             "visual_en": {
                 "type": "string",
-                "description": "Visual description for Stable Diffusion (English, detailed)",
+                "description": "Visual description for Stable Diffusion (English, detailed, static pose)",
             },
             "tags_en": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Stable Diffusion tags (English)",
+                "description": "Stable Diffusion tags (English, 5-15 tags)",
             },
             "body_focus": {
                 "type": "string",

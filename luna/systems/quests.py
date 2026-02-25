@@ -79,10 +79,12 @@ class ConditionContext:
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for evaluation."""
+        # Handle both enum and string time_of_day
+        time_str = self.game_state.time_of_day.value if hasattr(self.game_state.time_of_day, 'value') else str(self.game_state.time_of_day)
         return {
             "affinity": self.game_state.affinity,
             "location": self.game_state.current_location,
-            "time": self.game_state.time_of_day.value,
+            "time": time_str,
             "turn": self.turn_count,
             "turn_count": self.turn_count,
             "companion": self.game_state.active_companion,
