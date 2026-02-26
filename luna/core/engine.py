@@ -428,8 +428,6 @@ class GameEngine:
         movement_result = self._check_and_handle_movement(user_input)
         if movement_result:
             # Movement was handled, return result
-            if movement_result.success:
-                self._update_status()
             return TurnResult(
                 text=movement_result.transition_text or movement_result.block_description,
                 turn_number=game_state.turn_count,

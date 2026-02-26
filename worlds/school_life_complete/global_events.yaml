@@ -1,0 +1,200 @@
+# ============================================================
+# GLOBAL EVENTS - School Life Complete
+# Eventi atmosferici e situazionali
+# 
+# NOTA: I campi per l'LLM (description, atmosphere_change, narrative_prompt) 
+# devono essere in INGLESE per garantire la migliore comprensione.
+# I campi per il giocatore (title, message) possono essere in italiano.
+# ============================================================
+
+global_events:
+  
+  # --- WEATHER EVENTS ---
+  rainstorm:
+    meta:
+      title: "Temporale Improvviso"           # UI - può essere italiano
+      description: "A heavy rainstorm traps everyone at school"  # LLM context - IN INGLESE
+    
+    trigger:
+      type: "random"
+      chance: 0.15
+      allowed_times: ["Afternoon", "Evening"]
+    
+    effects:
+      duration: 3
+      location_modifiers:
+        - location: "school_entrance"
+          blocked: true
+          message: "La pioggia è troppo forte per uscire."  # Player message - italiano OK
+      
+      visual_tags: ["rain", "wet", "dark_sky", "puddles"]
+      atmosphere_change: "dramatic, trapped, intimate"  # IN INGLESE
+      
+      on_start:
+        - action: "set_flag"
+          key: "rainstorm_active"
+          value: true
+        - action: "set_emotional_state"
+          character: "{current_companion}"
+          state: "flustered"
+      
+      on_end:
+        - action: "set_flag"
+          key: "rainstorm_active"
+          value: false
+    
+    narrative_prompt: "Dark clouds suddenly envelop the school. Thunder rumbles through the halls. Students crowd at the windows in excited chatter. You are trapped at school with {current_companion}, creating an intimate, inescapable atmosphere. The rain drums against the windows, isolating you from the outside world..."
+  
+  # --- BLACKOUT ---
+  blackout:
+    meta:
+      title: "Blackout"
+      description: "The power goes out. Total darkness envelops the school."
+    
+    trigger:
+      type: "random"
+      chance: 0.08
+      allowed_times: ["Afternoon", "Evening"]
+    
+    effects:
+      duration: 3
+      
+      visual_tags: ["darkness", "flashlights", "shadows", "candlelight"]
+      atmosphere_change: "mysterious, intimate, tense"
+      
+      on_start:
+        - action: "set_flag"
+          key: "blackout_active"
+          value: true
+      
+      on_end:
+        - action: "set_flag"
+          key: "blackout_active"
+          value: false
+    
+    narrative_prompt: "The lights flicker and die. Total darkness envelops the school. Students laugh nervously in the dark, their voices hushed and intimate. In the darkness, you feel {current_companion}'s hand brush against yours accidentally, creating a moment of electric connection. Flashlights flicker on, casting dancing shadows on the walls..."
+  
+  # --- MARIA CLEANING TIME ---
+  maria_cleaning:
+    meta:
+      title: "L'Ora delle Pulizie"
+      description: "Maria is cleaning the hallways after hours. An opportunity presents itself."
+    
+    trigger:
+      type: "conditional"
+      conditions:
+        - type: "companion"
+          target: "Maria"
+        - type: "time"
+          operator: "eq"
+          value: "Evening"
+        - type: "random"
+          chance: 0.4
+    
+    effects:
+      duration: 2
+      
+      visual_tags: ["cleaning_supplies", "bending_over", "empty_hallways"]
+      atmosphere_change: "private, after_hours, intimate"
+      
+      on_start:
+        - action: "set_emotional_state"
+          character: "Maria"
+          state: "chatty"
+    
+    narrative_prompt: "The school is silent except for the rhythmic sound of Maria's broom sweeping the empty hallways. She hums an old melody as she works, her voice echoing softly. The after-hours atmosphere creates an intimate, private setting. She pretends not to notice you watching... or perhaps she does?"
+  
+  # --- STELLA FAN CLUB ---
+  stella_entourage:
+    meta:
+      title: "L'Entourage di Stella"
+      description: "Stella is surrounded by admirers and fans."
+    
+    trigger:
+      type: "conditional"
+      conditions:
+        - type: "companion"
+          target: "Stella"
+        - type: "affinity"
+          target: "Stella"
+          operator: "lt"
+          value: 40
+        - type: "random"
+          chance: 0.3
+    
+    effects:
+      duration: 2
+      
+      visual_tags: ["crowd", "admiring_boys", "jealous_girls"]
+      atmosphere_change: "social_pressure, popularity_contest"
+      
+      on_start:
+        - action: "set_emotional_state"
+          character: "Stella"
+          state: "competitive"
+    
+    narrative_prompt: "Stella holds court in the hallway, the center of attention. Boys hang on her every word while girls try to break into her inner circle. The atmosphere is charged with social pressure and competition. She spots you in the crowd and smiles challengingly. Can you break through her entourage to reach her?"
+  
+  # --- LUNA AUTHORITY ---
+  luna_discipline:
+    meta:
+      title: "Disciplina"
+      description: "Luna scolds students, demonstrating her authority and dominance."
+    
+    trigger:
+      type: "conditional"
+      conditions:
+        - type: "companion"
+          target: "Luna"
+        - type: "location"
+          operator: "in"
+          value: ["school_corridor", "school_entrance"]
+        - type: "random"
+          chance: 0.25
+    
+    effects:
+      duration: 1
+      
+      visual_tags: ["fear", "authority", "crowd_watching"]
+      atmosphere_change: "tense, dominant, authoritative"
+      
+      on_start:
+        - action: "set_emotional_state"
+          character: "Luna"
+          state: "authoritative"
+    
+    narrative_prompt: "A group of students is being scolded in the corridor. Luna is imposing and commanding, her authoritative voice cutting through the air. She notices you watching from the side. Her expression softens for just a moment before returning to stern authority. Though she says 'You! This doesn't concern you,' her eyes tell a different story..."
+  
+  # --- ALONE IN CLASSROOM ---
+  alone_classroom:
+    meta:
+      title: "Aula Vuota"
+      description: "You and your companion are alone in an empty classroom after hours."
+    
+    trigger:
+      type: "conditional"
+      conditions:
+        - type: "affinity"
+          target: "{current_companion}"
+          operator: "gte"
+          value: 30
+        - type: "time"
+          operator: "eq"
+          value: "Evening"
+        - type: "random"
+          chance: 0.2
+    
+    effects:
+      duration: 3
+      location_lock: "school_classroom"
+      
+      visual_tags: ["sunset_light", "empty_desks", "private"]
+      atmosphere_change: "romantic, isolated, intimate"
+      affinity_multiplier: 1.5
+      
+      on_start:
+        - action: "set_emotional_state"
+          character: "{current_companion}"
+          state: "flustered"
+    
+    narrative_prompt: "The classroom is empty except for you and {current_companion}. Golden sunset light streams through the windows, casting warm hues across the empty desks. She stands near the chalkboard, looking at you expectantly. The isolation creates an intimate, romantic atmosphere where no one will disturb you. The quiet after-hours setting feels like your own private world..."

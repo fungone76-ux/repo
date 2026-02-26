@@ -1,0 +1,229 @@
+# ============================================================
+# LUNA RPG v4 - WORLD CONFIGURATION
+# School Life Complete Edition
+# ============================================================
+
+meta:
+  id: "school_life_complete"
+  name: "Scuola di Provinzia"
+  genre: "Slice of Life, Romance, Erotic (18+)"
+  version: "4.0.0"
+  description: |
+    Un nuovo studente si trasferisce nel liceo "Leonardo da Vinci" di una cittadina di provincia.
+    Deve sciogliere i propri blocchi emotivi attraverso connessioni profonde con tre donne:
+    Maria (bidella 42enne, invisibile), Stella (compagna 18enne, snob), 
+    Luna (professoressa 38enne, divorziata).
+    
+  lore: |
+    Il Liceo "Leonardo da Vinci" è un istituto storico di una cittadina di provincia italiana.
+    Un luogo dove le vite si intrecciano tra lezioni, ricreazioni e segreti che si sussurrano nei corridoi.
+    Il protagonista è un nuovo arrivato, determinato a conquistare chiunque gli capiti a tiro,
+    dalla bidella trascurata alla professoressa più ambita.
+
+# ============================================================
+# PLAYER CHARACTER
+# ============================================================
+player_character:
+  identity:
+    name: "Protagonista"
+    age: 18
+    background: "Nuovo studente trasferito, determinato e carismatico"
+  
+  starting_stats:
+    strength: 10
+    mind: 10
+    charisma: 15
+    gold: 50
+
+# ============================================================
+# GAMEPLAY SYSTEMS
+# ============================================================
+gameplay_systems:
+  affinity:
+    enabled: true
+    tiers:
+      - threshold: 0
+        name: "Sconosciuto"
+        description: "Appena conosciuti"
+      - threshold: 20
+        name: "Conoscente"
+        description: "Primi contatti"
+      - threshold: 50
+        name: "Amico"
+        unlocked_actions: ["flirt", "regalo", "abbraccio"]
+      - threshold: 75
+        name: "Intimo"
+        unlocked_actions: ["appuntamento", "bacio"]
+      - threshold: 100
+        name: "Conquistato"
+        unlocked_actions: ["intimo"]
+  
+  economy:
+    enabled: true
+    currency: "euro"
+    starting_amount: 50
+    prices:
+      caffè: 2
+      regalo_fiori: 15
+      cena: 40
+      cinema: 12
+  
+  reputation:
+    enabled: true
+    factions:
+      studenti:
+        starting: 0
+        description: "Gli altri studenti"
+      professori:
+        starting: 5
+        description: "Il corpo docente"
+
+# ============================================================
+# STORY BEATS (Affinity-Based)
+# ============================================================
+story_beats:
+  premise: |
+    Storia di conquista e maturazione in un liceo di provincia.
+    Il protagonista deve costruire relazioni autentiche attraverso affinità emotiva,
+    non turni passivi. Ogni personaggio ha un arco specifico:
+    Maria (invisibile→devota), Stella (snob→gelosa), Luna (rigida→trasgressiva).
+  
+  themes:
+    - "conquista"
+    - "intimità"
+    - "eros"
+    - "trasgressione"
+    - "desiderio"
+  
+  hard_limits:
+    - "Tutti i personaggi sono adulti consenzienti (18+)"
+    - "Stella ha 18 anni (studente adulta)"
+    - "Nessuna forza o coercizione"
+    - "Progressione naturale basata su affinità"
+  
+  beats:
+    # === MARIA (Bidella 42 anni) ===
+    - id: "maria_primo_sguardo"
+      description: "Maria si accorge che qualcuno finalmente la vede come donna"
+      trigger: "maria_affinity >= 20"
+      required_elements: ["sguardo", "sorpresa", "arrossire"]
+      tone: "awkward_intimate"
+      once: true
+      consequence: "maria_flag_first_noticed = true"
+    
+    - id: "maria_confessione_solitudine"
+      description: "Maria confessa la sua invisibilità e solitudine"
+      trigger: "maria_affinity >= 50"
+      required_elements: ["confessione", "solitudine", "lacrime"]
+      tone: "vulnerable"
+      once: true
+      consequence: "maria_flag_confessed = true"
+    
+    - id: "maria_devozione_totale"
+      description: "Maria si offre completamente, diventa devota"
+      trigger: "maria_affinity >= 85"
+      required_elements: ["devozione", "sottomissione", "amore"]
+      tone: "passionate_devoted"
+      once: true
+      consequence: "maria_flag_devoted = true, maria_accepted_young_lover = true"
+    
+    # === STELLA (Compagna 18 anni) ===
+    - id: "stella_servizio_fotografico"
+      description: "Il servizio fotografico dove Stella capisce che sei diverso"
+      trigger: "stella_affinity >= 50"
+      required_elements: ["fotocamera", "sguardo", "cambiamento"]
+      tone: "tense_romantic"
+      once: true
+      consequence: "stella_flag_photoshoot = true"
+    
+    - id: "stella_gelosia_esplosiva"
+      description: "Stella esplode di gelosia e ti reclama pubblicamente"
+      trigger: "stella_affinity >= 75 AND reputation.studenti > 10"
+      required_elements: ["gelosia", "confronto", "possessività"]
+      tone: "dramatic_possessive"
+      once: true
+      consequence: "stella_flag_possessive = true"
+    
+    - id: "stella_dichiarazione_totale"
+      description: "Stella si dichiara completamente tua"
+      trigger: "stella_affinity >= 90"
+      required_elements: ["dichiarazione", "totale", "amore"]
+      tone: "passionate_obsessive"
+      once: true
+      consequence: "stella_confessed_love = true"
+    
+    # === LUNA (Professoressa 38 anni) ===
+    - id: "luna_confessione_divorzio"
+      description: "Luna confessa il suo divorzio e bisogno di calore"
+      trigger: "luna_affinity >= 40"
+      required_elements: ["confessione", "divorzio", "bisogno"]
+      tone: "vulnerable_conflicted"
+      once: true
+      consequence: "luna_flag_confessed_divorce = true"
+    
+    - id: "luna_lezione_privata"
+      description: "La lezione privata dove i freni cedono"
+      trigger: "luna_affinity >= 60 AND location == 'ufficio_luna'"
+      required_elements: ["porta_chiusa", "tensione", "trasgressione"]
+      tone: "forbidden_tense"
+      once: true
+      consequence: "luna_flag_private_lesson = true"
+    
+    - id: "luna_scelta_finale"
+      description: "Luna sceglie te nonostante il rischio carriera"
+      trigger: "luna_affinity >= 90"
+      required_elements: ["scelta", "rischio", "amore"]
+      tone: "dramatic_romantic"
+      once: true
+      consequence: "luna_confessed_love = true"
+
+# ============================================================
+# NPC DETECTION HINTS (for generic NPC generation)
+# ============================================================
+npc_logic:
+  female_hints:
+    - donna
+    - ragazza
+    - segretaria
+    - bibliotecaria
+    - cameriera
+    - infermiera
+    - professoressa
+    - studentessa
+    - bidella
+    - signora
+  
+  male_hints:
+    - uomo
+    - ragazzo
+    - professore
+    - preside
+    - bidello
+    - studente
+    - signore
+    - commesso
+    - barista
+
+# ============================================================
+# ENDGAME
+# ============================================================
+endgame:
+  description: "Conquista tutte e tre le protagoniste"
+  victory_conditions:
+    - type: "companion_conquered"
+      target: "Maria"
+      requires:
+        - affinity: 100
+        - flag: "maria_accepted_young_lover"
+    
+    - type: "companion_conquered"
+      target: "Stella"
+      requires:
+        - affinity: 100
+        - flag: "stella_confessed_love"
+    
+    - type: "companion_conquered"
+      target: "Luna"
+      requires:
+        - affinity: 100
+        - flag: "luna_confessed_love"

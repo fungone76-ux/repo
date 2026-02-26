@@ -1,0 +1,8 @@
+pip install sqlalchemy aiohttp fastapi uvicorn pillow torch torchvision torchaudio
+pip install opencv-python opencv-contrib-python gitpython gguf
+pip install imageio imageio-ffmpeg moviepy av
+pip install accelerate toml ftfy
+pip install diffusers transformers einops timm
+pip install -r requirements.txt
+pkill -f "python main.py" && sleep 3
+cd /workspace/ComfyUI && python main.py --listen 0.0.0.0 --port 8188

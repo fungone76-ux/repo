@@ -240,6 +240,7 @@ class StoryLogWidget(QGroupBox):
             padding: 10px;
         """)
         self.lbl_story.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.lbl_story.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         self.scroll.setWidget(self.lbl_story)
         layout.addWidget(self.scroll)
