@@ -169,6 +169,9 @@ class DynamicEventManager:
         self.daily_events_triggered: set = set()
         self.last_day_check: Optional[TimeOfDay] = None
         
+        # Grace period after skipping an event (prevents immediate new event)
+        self.skip_grace_period: int = 0  # Turns to wait before checking new events
+        
         # Load events from world
         self._load_events()
         
@@ -211,28 +214,62 @@ class DynamicEventManager:
         if not narrative:
             return None
         
-        # Parse location(s)
+        # Parse location(s) - support both direct and trigger.allowed_locations
         location = data.get('location')
         locations = data.get('locations', [])
         if isinstance(locations, str):
             locations = [locations]
         
-        # Parse time(s)
+        # Parse time(s) - support both 'time', 'time_slot', and 'trigger.allowed_times'
         time = None
         times = []
-        if 'time' in data:
-            time_str = data['time']
-            if isinstance(time_str, str):
+        
+        # Check for 'time' or 'time_slot' (daily events use time_slot)
+        time_value = data.get('time') or data.get('time_slot')
+        
+        if time_value:
+            if isinstance(time_value, str):
                 try:
-                    time = TimeOfDay(time_str)
+                    time = TimeOfDay(time_value)
                 except ValueError:
                     pass
-            elif isinstance(time_str, list):
-                for t in time_str:
+            elif isinstance(time_value, list):
+                for t in time_value:
                     try:
                         times.append(TimeOfDay(t))
                     except ValueError:
                         pass
+        
+        # Also check for 'times' array
+        if 'times' in data:
+            for t in data['times']:
+                try:
+                    times.append(TimeOfDay(t))
+                except ValueError:
+                    pass
+        
+        # Parse trigger section (random events use trigger.allowed_times and trigger.allowed_locations)
+        trigger = data.get('trigger', {})
+        if trigger:
+            # Parse allowed_times from trigger
+            allowed_times = trigger.get('allowed_times', [])
+            if isinstance(allowed_times, str):
+                allowed_times = [allowed_times]
+            for t in allowed_times:
+                try:
+                    times.append(TimeOfDay(t))
+                except ValueError:
+                    pass
+            
+            # Parse allowed_locations from trigger
+            allowed_locations = trigger.get('allowed_locations', [])
+            if isinstance(allowed_locations, str):
+                allowed_locations = [allowed_locations]
+            if allowed_locations:
+                if isinstance(locations, list):
+                    locations.extend(allowed_locations)
+                else:
+                    locations = list(allowed_locations)
         
         # Parse choices
         choices = []
@@ -263,8 +300,21 @@ class DynamicEventManager:
                 )
                 effects.append(effect)
         
-        # Parse conditions
+        # Parse conditions and trigger data
         conditions = data.get('conditions', {})
+        
+        # Parse trigger section for random events
+        trigger = data.get('trigger', {})
+        
+        # Convert chance (0.0-1.0) to weight (1-100)
+        weight = data.get('weight', 10)
+        if trigger and 'chance' in trigger:
+            # Convert probability to weight (e.g., 0.25 -> 25)
+            weight = int(trigger['chance'] * 100)
+        
+        # Add min_turn to conditions
+        if trigger and 'min_turn' in trigger:
+            conditions['min_turn'] = trigger['min_turn']
         
         return EventDefinition(
             event_id=event_id,
@@ -274,7 +324,7 @@ class DynamicEventManager:
             locations=locations,
             time=time,
             times=times,
-            weight=data.get('weight', 10),
+            weight=weight,
             priority=data.get('priority', 1),
             repeatable=data.get('repeatable', True),
             cooldown=data.get('cooldown', 3),
@@ -302,6 +352,12 @@ class DynamicEventManager:
         if self.current_event and self.current_event.status == EventStatus.PENDING:
             return self.current_event
         
+        # Check grace period (after user skipped an event, wait before offering new ones)
+        if self.skip_grace_period > 0:
+            print(f"[DynamicEventManager] Grace period active ({self.skip_grace_period} turns remaining), skipping event check")
+            self.skip_grace_period -= 1
+            return None
+        
         # Check for daily event first (higher priority)
         daily = self._check_daily_event(game_state)
         if daily:
@@ -328,9 +384,11 @@ class DynamicEventManager:
         
         # Find matching daily events
         candidates = []
+        print(f"[_check_daily_event] Checking {len(self.daily_events)} daily events, triggered: {self.daily_events_triggered}")
         for evt_id, evt_def in self.daily_events.items():
             # Skip if already triggered this time period
             if evt_id in self.daily_events_triggered:
+                print(f"[_check_daily_event] Skipping {evt_id} - already triggered")
                 continue
             
             # Check time match
@@ -470,6 +528,12 @@ class DynamicEventManager:
             elif key == 'flag':
                 flags = getattr(game_state, 'flags', {})
                 if not flags.get(value, False):
+                    return False
+            
+            elif key == 'min_turn':
+                # Check minimum turn requirement
+                current_turn = getattr(game_state, 'turn_count', 0)
+                if current_turn < value:
                     return False
         
         return True
@@ -671,8 +735,30 @@ class DynamicEventManager:
     def skip_event(self) -> None:
         """Skip current event without choosing."""
         if self.current_event:
+            event_id = self.current_event.event_id
+            event_type = self.current_event.event_type
+            
+            print(f"[DynamicEventManager] Skipping event: {event_id} (type: {event_type.value})")
+            
+            # Mark as expired
             self.current_event.status = EventStatus.EXPIRED
             self.current_event = None
+            
+            # Add cooldown to prevent immediate re-trigger
+            if event_type == EventType.DAILY:
+                # For daily events, mark as triggered for this time period
+                self.daily_events_triggered.add(event_id)
+                print(f"[DynamicEventManager] Added to daily_events_triggered: {event_id}")
+            else:
+                # For random events, set cooldown
+                self.cooldowns[event_id] = 5  # 5 turn cooldown
+                print(f"[DynamicEventManager] Set cooldown for: {event_id}")
+            
+            # Set grace period - don't offer new events for 5 turns
+            # This gives user time to continue conversation normally
+            # (Set to 5 instead of 3 because process_turn may be called multiple times)
+            self.skip_grace_period = 5
+            print(f"[DynamicEventManager] Set grace period: 3 turns")
     
     def get_current_event(self) -> Optional[EventInstance]:
         """Get current pending event if any."""

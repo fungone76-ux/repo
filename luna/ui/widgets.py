@@ -11,19 +11,108 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QProgressBar,
     QGroupBox, QScrollArea, QFrame, QPushButton,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
+
+
+class StoryBeatsWidget(QGroupBox):
+    """Widget for displaying story beats for active companion."""
+
+    def __init__(self, parent=None) -> None:
+        """Initialize story beats widget."""
+        super().__init__("🎭 Story Beats", parent)
+        self.setMaximumHeight(180)
+        self.setMinimumHeight(120)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+        layout.setContentsMargins(8, 12, 8, 8)
+
+        # Header with companion name
+        self.lbl_companion = QLabel("Nessun companion attivo")
+        self.lbl_companion.setStyleSheet("color: #aaa; font-weight: bold; font-size: 12px;")
+        layout.addWidget(self.lbl_companion)
+
+        # Beats list
+        self.beats_list = QListWidget()
+        self.beats_list.setStyleSheet("""
+            QListWidget {
+                background-color: #2d2d2d;
+                border: 1px solid #444;
+                border-radius: 4px;
+                color: #fff;
+                font-size: 11px;
+            }
+            QListWidget::item {
+                padding: 4px;
+                border-bottom: 1px solid #333;
+            }
+        """)
+        self.beats_list.setMaximumHeight(80)
+        layout.addWidget(self.beats_list)
+
+        # Progress summary
+        self.lbl_progress = QLabel("")
+        self.lbl_progress.setStyleSheet("color: #888; font-size: 10px;")
+        layout.addWidget(self.lbl_progress)
+
+    def update_beats(self, companion_name: str, beats: List[dict]) -> None:
+        """Update beats for current companion.
+        
+        Args:
+            companion_name: Name of active companion
+            beats: List of beat dicts with 'title', 'required_affinity', 'current_affinity', 'completed'
+        """
+        self.lbl_companion.setText(f"🎭 {companion_name}")
+        self.beats_list.clear()
+        
+        completed_count = 0
+        for beat in beats:
+            title = beat.get('title', 'Unknown')
+            req_aff = beat.get('required_affinity', 0)
+            cur_aff = beat.get('current_affinity', 0)
+            completed = beat.get('completed', False)
+            
+            if completed:
+                icon = "✅"
+                text = f"{icon} {title}"
+                completed_count += 1
+            elif cur_aff >= req_aff:
+                icon = "🟢"
+                text = f"{icon} {title} (pronta!)"
+            else:
+                icon = "🔒"
+                text = f"{icon} {title} ({cur_aff}/{req_aff})"
+            
+            item = QListWidgetItem(text)
+            if completed:
+                item.setForeground(Qt.gray)
+            elif cur_aff >= req_aff:
+                item.setForeground(Qt.green)
+            
+            self.beats_list.addItem(item)
+        
+        # Update progress
+        total = len(beats)
+        if total > 0:
+            self.lbl_progress.setText(f"Progresso: {completed_count}/{total} beats completati")
+        else:
+            self.lbl_progress.setText("Nessun beat disponibile")
 
 
 class QuestTrackerWidget(QGroupBox):
-    """Widget for tracking active quests."""
+    """Widget for tracking active quests with activation button."""
+    
+    # Signal emitted when user clicks to activate a quest
+    quest_activate_requested = Signal(str)  # quest_id
 
     def __init__(self, parent=None) -> None:
         """Initialize quest tracker."""
         super().__init__("📋 Quest", parent)
-        self.setMaximumHeight(140)
-        self.setMinimumHeight(100)
+        self.setMaximumHeight(200)
+        self.setMinimumHeight(120)
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(4)
 
         # Quest list
         self.quest_list = QListWidget()
@@ -35,7 +124,7 @@ class QuestTrackerWidget(QGroupBox):
                 color: #fff;
             }
             QListWidget::item {
-                padding: 8px;
+                padding: 6px;
                 border-bottom: 1px solid #444;
             }
             QListWidget::item:selected {
@@ -44,6 +133,29 @@ class QuestTrackerWidget(QGroupBox):
         """)
         layout.addWidget(self.quest_list)
 
+        # Activate button (hidden by default)
+        self.btn_activate = QPushButton("🎯 Clicca qui per attivare")
+        self.btn_activate.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 6px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #555;
+                color: #888;
+            }
+        """)
+        self.btn_activate.setVisible(False)
+        self.btn_activate.clicked.connect(self._on_activate_clicked)
+        layout.addWidget(self.btn_activate)
+
         # Detail label
         self.lbl_detail = QLabel("No active quests")
         self.lbl_detail.setWordWrap(True)
@@ -51,28 +163,65 @@ class QuestTrackerWidget(QGroupBox):
         layout.addWidget(self.lbl_detail)
 
         self.quest_list.currentRowChanged.connect(self._on_quest_selected)
+        
+        # Store current quest data
+        self._current_quests: List[dict] = []
+        self._selected_quest_id: Optional[str] = None
 
     def _on_quest_selected(self, row: int) -> None:
         """Handle quest selection."""
-        if row >= 0:
-            item = self.quest_list.item(row)
-            if item:
-                self.lbl_detail.setText(item.toolTip())
+        if row >= 0 and row < len(self._current_quests):
+            quest = self._current_quests[row]
+            self._selected_quest_id = quest.get('quest_id')
+            self.lbl_detail.setText(quest.get('description', ''))
+            
+            # Show activate button if quest is available (not active or completed)
+            status = quest.get('status', '')
+            requirements = quest.get('requirements', {})
+            can_activate = status == 'available' and requirements
+            
+            self.btn_activate.setVisible(can_activate)
+            if can_activate:
+                req_text = f"Richiede: Affinity {requirements.get('affinity', '??')}"
+                self.btn_activate.setToolTip(req_text)
+        else:
+            self._selected_quest_id = None
+            self.btn_activate.setVisible(False)
+
+    def _on_activate_clicked(self) -> None:
+        """Emit signal to activate selected quest."""
+        if self._selected_quest_id:
+            self.quest_activate_requested.emit(self._selected_quest_id)
 
     def update_quests(self, quests: List[dict]) -> None:
-        """Update quest list."""
+        """Update quest list.
+        
+        Args:
+            quests: List of quest dicts with 'quest_id', 'title', 'status', 'description', 'requirements'
+        """
+        self._current_quests = quests
         self.quest_list.clear()
+        self.btn_activate.setVisible(False)
 
         for quest in quests:
             status = quest.get('status', 'unknown')
-            icon = "🟢" if status == 'active' else "✅" if status == 'completed' else "🔴"
+            if status == 'active':
+                icon = "🟢"
+            elif status == 'completed':
+                icon = "✅"
+            elif status == 'available':
+                icon = "⭐"  # Available but not started
+            else:
+                icon = "🔴"
+            
             title = quest.get('title', 'Unknown Quest')
-
             item = QListWidgetItem(f"{icon} {title}")
             item.setToolTip(quest.get('description', ''))
 
             if status == 'completed':
                 item.setForeground(Qt.gray)
+            elif status == 'available':
+                item.setForeground(Qt.yellow)
 
             self.quest_list.addItem(item)
 
@@ -174,21 +323,35 @@ class CompanionStatusWidget(QGroupBox):
 
 
 class GlobalEventWidget(QGroupBox):
-    """Widget for displaying active global event."""
+    """Widget for displaying active global event and dynamic event choices."""
+    
+    # Signals for choice selection
+    choice_selected = Signal(int)  # choice index
+    event_dismissed = Signal()
 
     def __init__(self, parent=None) -> None:
         """Initialize event widget."""
         super().__init__("🌍 Event", parent)
-        self.setMaximumHeight(80)
+        self.setMaximumHeight(200)
         self.setMinimumHeight(60)
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(4)
 
         self.lbl_event = QLabel("No active events")
         self.lbl_event.setWordWrap(True)
         self.lbl_event.setStyleSheet("color: #888; font-size: 11px; padding: 5px;")
-
         layout.addWidget(self.lbl_event)
+        
+        # Container for choice buttons (hidden by default)
+        self.choices_container = QWidget()
+        choices_layout = QHBoxLayout(self.choices_container)
+        choices_layout.setSpacing(4)
+        choices_layout.setContentsMargins(0, 0, 0, 0)
+        self.choice_buttons: List[QPushButton] = []
+        layout.addWidget(self.choices_container)
+        self.choices_container.hide()
+        
         layout.addStretch()
 
     def set_event(
@@ -211,6 +374,96 @@ class GlobalEventWidget(QGroupBox):
             self.lbl_event.setStyleSheet(
                 "color: #888; font-size: 11px; padding: 5px;"
             )
+        # Hide choices when regular event is set
+        self._clear_choices()
+    
+    def show_event_choices(
+        self,
+        event_title: str,
+        description: str,
+        choices: List[str],
+    ) -> None:
+        """Show dynamic event with choice buttons.
+        
+        Args:
+            event_title: Title of the event
+            description: Event description
+            choices: List of choice texts
+        """
+        self.setTitle(f"🎲 {event_title}")
+        self.lbl_event.setText(description)
+        self.lbl_event.setStyleSheet(
+            "color: #FFC107; font-size: 11px; padding: 5px; "
+            "background-color: #332200; border-radius: 4px;"
+        )
+        
+        # Clear old buttons
+        self._clear_choices()
+        
+        # Create choice buttons
+        layout = self.choices_container.layout()
+        for i, choice_text in enumerate(choices):
+            btn = QPushButton(f"{i+1}. {choice_text}")
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #444;
+                    color: white;
+                    border: 1px solid #666;
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #555;
+                    border-color: #888;
+                }
+                QPushButton:pressed {
+                    background-color: #666;
+                }
+            """)
+            btn.clicked.connect(lambda checked, idx=i: self._on_choice_clicked(idx))
+            layout.addWidget(btn)
+            self.choice_buttons.append(btn)
+        
+        # Add dismiss button
+        btn_dismiss = QPushButton("Ignora")
+        btn_dismiss.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #888;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                color: #aaa;
+                border-color: #777;
+            }
+        """)
+        btn_dismiss.clicked.connect(self._on_dismiss_clicked)
+        layout.addWidget(btn_dismiss)
+        self.choice_buttons.append(btn_dismiss)
+        
+        self.choices_container.show()
+    
+    def _clear_choices(self) -> None:
+        """Clear all choice buttons."""
+        for btn in self.choice_buttons:
+            btn.deleteLater()
+        self.choice_buttons.clear()
+        self.choices_container.hide()
+    
+    def _on_choice_clicked(self, choice_index: int) -> None:
+        """Handle choice button click."""
+        self.choice_selected.emit(choice_index)
+        self._clear_choices()
+    
+    def _on_dismiss_clicked(self) -> None:
+        """Handle dismiss button click."""
+        self.event_dismissed.emit()
+        self._clear_choices()
+        self.set_event()  # Reset to default state
 
 
 class StoryLogWidget(QGroupBox):
@@ -326,6 +579,10 @@ class ImageDisplayWidget(QGroupBox):
 class OutfitWidget(QGroupBox):
     """Widget for displaying and managing character outfit."""
     
+    # Signals for button clicks
+    change_outfit_requested = Signal()  # "Cambia" button clicked
+    modify_outfit_requested = Signal()  # "Modifica" button clicked
+    
     def __init__(self, parent=None) -> None:
         """Initialize outfit widget."""
         super().__init__("👗 Outfit", parent)
@@ -355,12 +612,14 @@ class OutfitWidget(QGroupBox):
         btn_layout = QHBoxLayout()
         
         self.btn_change = QPushButton("🔄 Cambia")
-        self.btn_change.setToolTip("Change outfit style")
+        self.btn_change.setToolTip("Change outfit style (random)")
         self.btn_change.setEnabled(False)
+        self.btn_change.clicked.connect(self.change_outfit_requested.emit)
         
         self.btn_modify = QPushButton("✏️ Modifica")
-        self.btn_modify.setToolTip("Modify outfit details")
+        self.btn_modify.setToolTip("Modify outfit (custom description)")
         self.btn_modify.setEnabled(False)
+        self.btn_modify.clicked.connect(self.modify_outfit_requested.emit)
         
         btn_layout.addWidget(self.btn_change)
         btn_layout.addWidget(self.btn_modify)

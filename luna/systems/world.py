@@ -269,6 +269,7 @@ class WorldLoader:
             merged_data: Dict[str, Any] = {
                 "meta": {},
                 "npc_logic": {},
+                "npc_templates": {},
                 "companions": {},
                 "locations": {},
                 "quests": {},
@@ -288,6 +289,7 @@ class WorldLoader:
                 merged_data["player_character"] = meta_data.get("player_character", {})
                 merged_data["endgame"] = meta_data.get("endgame", {})
                 merged_data["visual_style"] = meta_data.get("visual_style", {})
+                merged_data["story_beats"] = meta_data.get("story_beats", {})
             
             # Load all other YAML files
             for yaml_file in folder_path.glob("*.yaml"):
@@ -358,6 +360,15 @@ class WorldLoader:
                             for evt in global_data:
                                 if isinstance(evt, dict) and "id" in evt:
                                     merged_data["global_events"][evt["id"]] = evt
+                    
+                    # Merge NPC templates (secondary characters with visual identity)
+                    if yaml_file.name == "npc_templates.yaml":
+                        if "npc_templates" in file_data:
+                            merged_data["npc_templates"].update(file_data["npc_templates"])
+                        if "fallback_female" in file_data:
+                            merged_data["npc_fallback_female"] = file_data["fallback_female"]
+                        if "fallback_male" in file_data:
+                            merged_data["npc_fallback_male"] = file_data["fallback_male"]
                     
                     # Merge milestones from companion files
                     if "milestones" in file_data:
@@ -590,6 +601,7 @@ class WorldLoader:
             random_events=data.get("random_events", {}),
             daily_events=data.get("daily_events", {}),
             player_character=player_character,
+            story_beats=data.get("story_beats", {}),
         )
     
     def _process_companion(self, name: str, data: Dict[str, Any]) -> CompanionDefinition:

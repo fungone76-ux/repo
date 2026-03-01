@@ -160,7 +160,7 @@ class Settings(BaseSettings):
     )
     
     enable_semantic_memory: bool = Field(
-        default=False,
+        default=True,
         description="Enable semantic memory search using ChromaDB and embeddings",
     )
     
@@ -377,7 +377,7 @@ class UserPreferences:
     @property
     def enable_semantic_memory(self) -> bool:
         """Enable semantic memory search."""
-        return self.get("enable_semantic_memory", False)
+        return self.get("enable_semantic_memory", True)
     
     @enable_semantic_memory.setter
     def enable_semantic_memory(self, value: bool) -> None:

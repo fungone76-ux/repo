@@ -1,9 +1,6 @@
 """Async Wan2.1 I2V video generation client.
 
-Based on v3 implementation:
-- User provides simple action description (Italian)
-- LLM converts to temporal prompt with timestamps
-- Wan2.1 generates video from image + temporal prompt
+Uses API-format workflow (id -> node) compatible with ComfyUI.
 """
 from __future__ import annotations
 
@@ -21,26 +18,15 @@ from luna.ai.manager import get_llm_manager
 
 
 class VideoClient:
-    """Wan2.1 I2V video generation client.
-    
-    Flow:
-    1. User input: "Luna balla lentamente" (simple Italian description)
-    2. LLM generates temporal prompt with timestamps
-    3. Wan2.1 generates video using image + temporal prompt
-    """
+    """Wan2.1 I2V video generation client."""
     
     def __init__(self, workflow_path: Optional[Path] = None) -> None:
-        """Initialize video client.
-        
-        Args:
-            workflow_path: Path to Wan2.1 workflow JSON
-        """
+        """Initialize video client."""
         self.settings = get_settings()
         self.client_id = str(uuid.uuid4())
         self.workflow_path = workflow_path or Path("comfy_workflow_video.json")
         self.llm_manager = get_llm_manager()
-        
-        self.timeout = aiohttp.ClientTimeout(total=600)  # 10 min for video
+        self.timeout = aiohttp.ClientTimeout(total=600)
     
     async def generate_video(
         self,
@@ -49,18 +35,7 @@ class VideoClient:
         character_name: str = "",
         save_dir: Optional[Path] = None,
     ) -> Optional[Path]:
-        """Generate video from image and user action description.
-        
-        Args:
-            image_path: Source image for I2V
-            user_action: User's action description (Italian, simple)
-                         Example: "Luna balla lentamente", "she waves her hand"
-            character_name: Character name for context
-            save_dir: Directory to save video
-            
-        Returns:
-            Path to generated video or None
-        """
+        """Generate video from image and user action description."""
         if not self.settings.video_available:
             print("[Video] Video generation not available (requires RunPod)")
             return None
@@ -71,7 +46,7 @@ class VideoClient:
             return None
         
         try:
-            # 1. Upload image to RunPod first!
+            # 1. Upload image
             print(f"[Video] Uploading image to RunPod...")
             uploaded_filename = await self._upload_image(comfy_url, image_path)
             if not uploaded_filename:
@@ -79,75 +54,48 @@ class VideoClient:
                 return None
             print(f"[Video] Image uploaded: {uploaded_filename}")
             
-            # 2. Generate temporal prompt from user action
+            # 2. Generate temporal prompt
             print(f"[Video] Generating temporal prompt from: '{user_action}'")
-            temporal_prompt = await self._build_temporal_prompt(
-                user_action=user_action,
-                character_name=character_name,
-            )
+            temporal_prompt = await self._build_temporal_prompt(user_action, character_name)
+            print(f"[Video] Temporal prompt ready ({len(temporal_prompt)} chars)")
             
-            if not temporal_prompt:
-                print("[Video] Failed to generate temporal prompt")
-                return None
-            
-            print(f"[Video] Temporal prompt:\n{temporal_prompt}")
-            
-            # 3. Manage VRAM (unload image models)
+            # 3. Unload image models to free VRAM
             await self._unload_image_models(comfy_url)
             
             # 4. Load and patch workflow
             workflow = await self._load_workflow()
-            self._patch_workflow(
-                workflow=workflow,
-                image_filename=uploaded_filename,  # Use uploaded filename only
-                temporal_prompt=temporal_prompt,
-                character_name=character_name,
-            )
+            self._patch_workflow(workflow, uploaded_filename, temporal_prompt, character_name)
             
-            # 5. Submit to Wan2.1
+            # 5. Submit
             print(f"[Video] Submitting to Wan2.1...")
             prompt_id = await self._submit_workflow(comfy_url, workflow)
             if not prompt_id:
                 return None
             
-            # 6. Wait with longer timeout (7 min DND mode)
+            # 6. Wait and download
             print("[Video] Generating... (this takes ~5-7 minutes)")
-            video_path = await self._wait_and_download(
-                comfy_url, prompt_id, character_name, save_dir
-            )
+            video_path = await self._wait_and_download(comfy_url, prompt_id, character_name, save_dir)
             
-            # 7. Cleanup VRAM
+            # 7. Cleanup
             await self._cleanup_vram(comfy_url)
             
             return video_path
             
         except Exception as e:
             print(f"[Video] Error: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
-    async def _upload_image(
-        self,
-        comfy_url: str,
-        image_path: Path,
-    ) -> Optional[str]:
-        """Upload image to RunPod ComfyUI.
-        
-        Args:
-            comfy_url: ComfyUI URL
-            image_path: Local image path
-            
-        Returns:
-            Uploaded filename or None
-        """
+    async def _upload_image(self, comfy_url: str, image_path: Path) -> Optional[str]:
+        """Upload image to RunPod ComfyUI."""
         try:
-            # Read image file
             async with aiofiles.open(image_path, "rb") as f:
                 image_data = await f.read()
             
             filename = image_path.name
             
             async with aiohttp.ClientSession() as session:
-                # Upload via ComfyUI API
                 form = aiohttp.FormData()
                 form.add_field("image", image_data, filename=filename, content_type="image/png")
                 
@@ -157,61 +105,61 @@ class VideoClient:
                 ) as resp:
                     if resp.status in (200, 201):
                         data = await resp.json()
-                        # Return the name ComfyUI assigned
                         return data.get("name", filename)
                     else:
                         error = await resp.text()
                         print(f"[Video] Upload failed: {resp.status} - {error[:200]}")
-                        # Fallback: return original filename
                         return filename
                         
         except Exception as e:
             print(f"[Video] Upload error: {e}")
-            # Fallback: try with original filename
             return image_path.name
     
-    async def _build_temporal_prompt(
-        self,
-        user_action: str,
-        character_name: str = "",
-    ) -> Optional[str]:
-        """Convert user action to temporal prompt with timestamps.
-        
-        Args:
-            user_action: Simple Italian description (es. "Luna balla")
-            character_name: Character name
-            
-        Returns:
-            Temporal prompt with 0s, 1s, 2s, 3s, 4s timestamps
-        """
-        system_prompt = """You are an expert video prompt engineer for Wan2.1 I2V (Image-to-Video).
+    async def _build_temporal_prompt(self, user_action: str, character_name: str = "") -> str:
+        """Convert user action to temporal prompt with timestamps (IT -> EN)."""
+        system_prompt = """You are an expert video prompt engineer for Wan2.1 I2V.
 
-Your task: Convert the user's simple action description into a detailed temporal prompt.
+Convert the user's simple action description into a detailed temporal prompt in ENGLISH.
+
+IMPORTANT:
+- The user may write in Italian or English
+- You MUST output the temporal prompt in ENGLISH only
+- This prompt will be used by an AI video model that understands English best
 
 RULES:
-1. Use timestamps: 0s, 1s, 2s, 3s, 4s (5 seconds total)
+1. Use timestamps: 0s, 2s, 4s, 6s, 8s (10 seconds total)
 2. Describe ONLY physical motion - NO emotions, NO facial expressions
-3. Focus on: body movement, clothing motion, hair flow, camera movement
+3. Focus on: body movement, clothing motion, hair flow
 4. Be specific about speed: slowly, gently, gradually
-5. Ensure motion is smooth and continuous across timestamps
+5. Ensure smooth continuous motion
+6. OUTPUT MUST BE IN ENGLISH
 
 FORMAT:
 0s: Initial state + beginning of motion
-1s: Motion continues, describe specific movement  
-2s: Peak of motion
-3s: Motion slows/decays
-4s: Final pose, subtle natural movement (breathing, etc)
+2s: Motion continues, specific movement  
+4s: Peak of motion
+6s: Motion slows/decays
+8s: Final pose, subtle natural movement
 
-EXAMPLE:
+EXAMPLE 1 (English input):
 User: "she waves her hand"
 Output:
 0s: Character stands facing camera, right hand begins to raise slowly
-1s: Hand continues rising to shoulder height, fingers slightly spread
-2s: Hand waves gently side to side in greeting gesture
-3s: Waving slows, hand begins to lower gradually
-4s: Hand returns to resting position, subtle breathing motion in chest"""
+2s: Hand continues rising to shoulder height, fingers slightly spread
+4s: Hand waves gently side to side in greeting gesture
+6s: Waving slows, hand begins to lower gradually
+8s: Hand returns to resting position, subtle breathing motion
 
-        user_prompt = f"Character: {character_name or 'the character'}\nAction: {user_action}\n\nGenerate temporal prompt:"
+EXAMPLE 2 (Italian input -> English output):
+User: "una donna si apre la camicetta"
+Output:
+0s: Woman sitting, hands reaching for shirt buttons, beginning to unbutton
+2s: First buttons undone, shirt opening slowly, cleavage becoming visible
+4s: Shirt fully open, fabric parting to reveal chest, hands on collar
+6s: Hands moving to remove shirt from shoulders, motion slowing
+8s: Shirt partially off, arms relaxed, subtle breathing motion"""
+
+        user_prompt = f"Character: {character_name or 'woman'}\nAction: {user_action}\n\nGenerate temporal prompt in ENGLISH:"
         
         try:
             response = await self.llm_manager.generate(
@@ -221,36 +169,28 @@ Output:
                 json_mode=False,
             )
             
-            # Clean up response
             temporal = response.text.strip()
             
             # Ensure it has timestamps
             if "0s:" not in temporal:
-                # Fallback: wrap in basic temporal structure
                 temporal = f"""0s: Character begins {user_action}
-1s: Motion continues naturally
-2s: Peak of {user_action}
-3s: Motion slows
-4s: Settles into final pose"""
+2s: Motion continues smoothly
+4s: Peak of {user_action}
+6s: Motion slows
+8s: Settles into final pose"""
             
             return temporal
             
         except Exception as e:
-            print(f"[Video] Temporal prompt generation failed: {e}")
-            # Fallback simple temporal
+            print(f"[Video] Temporal prompt failed: {e}")
             return f"""0s: Character begins {user_action}
-1s: Motion continues smoothly
-2s: Peak of action
-3s: Motion slows gradually
-4s: Settles into final pose"""
+2s: Motion continues
+4s: Peak of action
+6s: Motion slows
+8s: Final pose"""
     
     async def _unload_image_models(self, comfy_url: str) -> None:
-        """Unload image generation models to free VRAM.
-        
-        Args:
-            comfy_url: ComfyUI URL
-        """
-        print("[Video] Unloading image models...")
+        """Unload image models to free VRAM."""
         try:
             async with aiohttp.ClientSession() as session:
                 await session.post(
@@ -258,40 +198,26 @@ Output:
                     json={"unload_models": True, "free_memory": True},
                     timeout=15,
                 )
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
         except Exception as e:
             print(f"[Video] Unload warning: {e}")
     
     async def _cleanup_vram(self, comfy_url: str) -> None:
-        """Cleanup VRAM after video generation.
-        
-        Args:
-            comfy_url: ComfyUI URL
-        """
-        print("[Video] Cleaning up VRAM...")
+        """Cleanup VRAM after video generation."""
         try:
             async with aiohttp.ClientSession() as session:
-                # Multiple /free calls for thorough cleanup
-                for i in range(5):
-                    try:
-                        await session.post(
-                            f"{comfy_url}/free",
-                            json={"unload_models": True, "free_memory": True},
-                            timeout=30,
-                        )
-                        wait_times = [1, 2, 2, 3, 3]
-                        await asyncio.sleep(wait_times[i])
-                    except:
-                        pass
+                for _ in range(3):
+                    await session.post(
+                        f"{comfy_url}/free",
+                        json={"unload_models": True, "free_memory": True},
+                        timeout=30,
+                    )
+                    await asyncio.sleep(2)
         except Exception as e:
             print(f"[Video] Cleanup warning: {e}")
     
     async def _load_workflow(self) -> Dict[str, Any]:
-        """Load Wan2.1 workflow JSON.
-        
-        Returns:
-            Workflow dict
-        """
+        """Load API-format workflow JSON."""
         async with aiofiles.open(self.workflow_path, "r", encoding="utf-8") as f:
             content = await f.read()
             return json.loads(content)
@@ -303,15 +229,7 @@ Output:
         temporal_prompt: str,
         character_name: str,
     ) -> None:
-        """Patch workflow with video parameters.
-        
-        Args:
-            workflow: Workflow dict
-            image_filename: Uploaded image filename (not path!)
-            temporal_prompt: Temporal motion description
-            character_name: Character name
-        """
-        # Find and patch nodes - MINIMAL patching to avoid breaking workflow
+        """Patch workflow with runtime values."""
         for node_id, node in workflow.items():
             if not isinstance(node, dict):
                 continue
@@ -319,53 +237,55 @@ Output:
             inputs = node.get("inputs", {})
             class_type = node.get("class_type", "")
             
-            # Load image node - ONLY change the filename, nothing else
-            if class_type == "LoadImage" and "image" in inputs:
+            # Patch LoadImage node
+            if class_type == "LoadImage":
                 inputs["image"] = image_filename
-                print(f"[Video] Set image to: {image_filename}")
+                print(f"[Video] Set image: {image_filename}")
             
-            # ONLY patch the positive prompt (node 5 typically)
-            # Look for CLIPTextEncode that contains positive video prompt
-            if class_type == "CLIPTextEncode" and "text" in inputs:
-                text = str(inputs.get("text", ""))
-                # Only patch if it looks like a positive prompt (long, contains video keywords)
-                is_negative = any(word in text.lower() for word in 
-                    ["deformed", "bad anatomy", "poor quality", "ugly", "distorted", "faded colors"])
-                is_positive = len(text) > 100 and not is_negative and any(kw in text.lower() for kw in ["video", "cinematic", "motion"])
+            # Patch positive prompt (CLIPTextEncode with "positive" in meta or longer text)
+            elif class_type == "CLIPTextEncode":
+                text = inputs.get("text", "")
+                meta = node.get("_meta", {})
+                title = meta.get("title", "").lower()
+                
+                # Check if this is the positive prompt node
+                is_positive = (
+                    "positive" in title or
+                    "nsfw" in title or
+                    len(str(text)) > 100 and "deformed" not in str(text).lower()
+                )
                 
                 if is_positive:
                     inputs["text"] = temporal_prompt
                     print(f"[Video] Set temporal prompt ({len(temporal_prompt)} chars)")
             
-            # Filename prefix for output
-            if class_type == "VHS_VideoCombine":
+            # Patch output filename
+            elif class_type == "VHS_VideoCombine":
                 if "filename_prefix" in inputs:
                     prefix = character_name or "video"
                     inputs["filename_prefix"] = f"{prefix}_Wan2.1"
-                    print(f"[Video] Set filename prefix to: {prefix}_Wan2.1")
+                    print(f"[Video] Set filename prefix: {prefix}_Wan2.1")
     
     async def _submit_workflow(
         self,
         comfy_url: str,
         workflow: Dict[str, Any],
     ) -> Optional[str]:
-        """Submit workflow to ComfyUI.
+        """Submit workflow to ComfyUI."""
+        # Debug: print first node to verify structure
+        first_key = list(workflow.keys())[0] if workflow else None
+        print(f"[Video] Workflow has {len(workflow)} nodes, first key: {first_key}")
         
-        Args:
-            comfy_url: ComfyUI URL
-            workflow: Patched workflow
-            
-        Returns:
-            Prompt ID or None
-        """
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            payload = {"prompt": workflow, "client_id": self.client_id}
+            
             async with session.post(
                 f"{comfy_url}/prompt",
-                json={"prompt": workflow, "client_id": self.client_id}
+                json=payload
             ) as resp:
                 if resp.status != 200:
                     error = await resp.text()
-                    print(f"[Video] Submit failed: {resp.status} - {error[:200]}")
+                    print(f"[Video] Submit failed: {resp.status} - {error[:500]}")
                     return None
                 
                 data = await resp.json()
@@ -381,27 +301,16 @@ Output:
         character: str,
         save_dir: Optional[Path],
     ) -> Optional[Path]:
-        """Wait for video generation and download.
-        
-        Args:
-            comfy_url: ComfyUI URL
-            prompt_id: Prompt ID
-            character: Character name
-            save_dir: Save directory
-            
-        Returns:
-            Path to video or None
-        """
-        # DND mode: 7 minutes wait (Wan2.1 needs time)
-        max_wait = 420  # 7 minutes
-        poll_interval = 10  # Check every 10 seconds
+        """Wait for video generation and download."""
+        max_wait = 600  # 10 minutes
+        poll_interval = 10
         
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             for attempt in range(0, max_wait, poll_interval):
                 await asyncio.sleep(poll_interval)
                 
                 progress = min(100, int((attempt / max_wait) * 100))
-                print(f"[Video] Progress: {progress}% (waited {attempt}s)")
+                print(f"[Video] Progress: {progress}% ({attempt}s)")
                 
                 try:
                     async with session.get(f"{comfy_url}/history/{prompt_id}") as r:
@@ -412,34 +321,58 @@ Output:
                             if outputs:
                                 print(f"[Video] Generation complete! Outputs: {list(outputs.keys())}")
                                 
-                                # Download video - handle different output formats
+                                # Find video file - try multiple output formats
                                 for nid, node in outputs.items():
-                                    print(f"[Video] Checking node {nid}: {node.keys() if isinstance(node, dict) else 'not dict'}")
+                                    print(f"[Video] Checking node {nid}: {type(node)}")
                                     
-                                    # Try different output formats
                                     files = []
                                     if isinstance(node, dict):
-                                        files = node.get("files", []) or node.get("images", []) or node.get("gifs", [])
+                                        # Try different output formats
+                                        files = (
+                                            node.get("files", []) or 
+                                            node.get("images", []) or 
+                                            node.get("gifs", []) or
+                                            node.get("videos", [])
+                                        )
+                                    
+                                    print(f"[Video] Files found: {len(files)}")
                                     
                                     for f in files:
-                                        fname = f.get("filename", "") if isinstance(f, dict) else f
-                                        print(f"[Video] Found file: {fname}")
-                                        if fname.endswith((".mp4", ".webm", ".gif", ".mov")):
+                                        if isinstance(f, dict):
+                                            fname = f.get("filename", "")
+                                            subfolder = f.get("subfolder", "")
+                                        else:
+                                            fname = str(f)
+                                            subfolder = ""
+                                        
+                                        print(f"[Video] Found file: {fname} (subfolder: {subfolder})")
+                                        
+                                        if fname.endswith((".mp4", ".webm", ".gif", ".mov", ".avi")):
                                             print(f"[Video] Downloading: {fname}")
                                             return await self._download_video(
-                                                session, comfy_url, fname, character, save_dir
+                                                session, comfy_url, fname, character, save_dir, subfolder
                                             )
                                 
-                                print("[Video] No video file found in outputs!")
+                                # If no video found in outputs, try listing the output folder
+                                print("[Video] No video in outputs, trying to list output folder...")
+                                try:
+                                    async with session.get(f"{comfy_url}/view?type=output") as list_r:
+                                        if list_r.status == 200:
+                                            files_list = await list_r.json()
+                                            print(f"[Video] Output folder files: {files_list}")
+                                except Exception as e:
+                                    print(f"[Video] List error: {e}")
+                                
+                                print("[Video] No video file found!")
                                 return None
                                 
                 except Exception as e:
-                    print(f"[!] Poll error: {e}")
+                    print(f"[Video] Poll error: {e}")
                     import traceback
                     traceback.print_exc()
                     continue
             
-            print("[Video] Timeout - generation may still be processing")
+            print("[Video] Timeout!")
             return None
     
     async def _download_video(
@@ -449,20 +382,17 @@ Output:
         filename: str,
         character: str,
         save_dir: Optional[Path],
+        subfolder: str = "",
     ) -> Optional[Path]:
-        """Download generated video.
+        """Download generated video."""
+        # Build URL with subfolder if present
+        url = f"{comfy_url}/view?filename={filename}"
+        if subfolder:
+            url += f"&subfolder={subfolder}"
         
-        Args:
-            session: HTTP session
-            comfy_url: ComfyUI URL
-            filename: Video filename
-            character: Character name
-            save_dir: Save directory
-            
-        Returns:
-            Path to video or None
-        """
-        async with session.get(f"{comfy_url}/view?filename={filename}") as r:
+        print(f"[Video] Download URL: {url}")
+        
+        async with session.get(url) as r:
             if r.status == 200:
                 video_data = await r.read()
                 
@@ -475,8 +405,12 @@ Output:
                 async with aiofiles.open(path, "wb") as f:
                     await f.write(video_data)
                 
-                print(f"[Video] Saved: {path}")
+                print(f"[Video] Saved: {path} ({len(video_data)} bytes)")
                 return path
+            else:
+                print(f"[Video] Download failed: {r.status}")
+                error_text = await r.text()
+                print(f"[Video] Error: {error_text[:200]}")
             
             return None
 

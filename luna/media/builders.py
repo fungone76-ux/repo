@@ -62,10 +62,10 @@ class OutfitPromptMapper:
             "hoodie": ("hoodie, hooded jacket", "formal jacket, coat"),
         },
         OutfitComponent.ACCESSORIES.value: {
-            "glasses": ("glasses, eyeglasses", "no glasses"),
+
             "sunglasses": ("sunglasses, shades", "no glasses"),
             "hat": ("hat, cap", "no hat, bare head"),
-            "jewelry": ("jewelry, necklace, earrings", "no jewelry"),
+            "jewelry":  ( "no jewelry"),
             "scarf": ("scarf, neck scarf", "no scarf"),
         },
         OutfitComponent.SPECIAL.value: {
@@ -1011,8 +1011,11 @@ class ImagePromptBuilder:
         # Add composition hints
         composition_hints = {
             "close_up": "close-up portrait, face focus, detailed face",
-            "medium_shot": "medium shot, waist up, upper body",
+            "medium_shot": "medium shot",  # Rimosso waist up e upper body!
+            "cowboy_shot": "cowboy shot, framing from knees up",
             "wide_shot": "wide shot, full body, environmental",
+            "from_below": "shot from below, low angle",
+            "from_above": "shot from above, high angle",
         }
         if composition in composition_hints:
             positive_parts.append(composition_hints[composition])

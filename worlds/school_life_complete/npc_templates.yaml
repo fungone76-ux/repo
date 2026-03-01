@@ -1,0 +1,263 @@
+# ============================================================
+# NPC TEMPLATES - School Life Complete
+# Personaggi secondari con identità visiva definita
+# ============================================================
+
+# NOTA: Questi NPC sono generici ma con caratteristiche visive consistenti.
+# Non hanno LoRA specifici ma usano prompt base dettagliati per 
+# garantire riconoscibilità tra incontri multipli.
+
+npc_templates:
+  
+  # ============================================================
+  # STAFF SCOLASTICO
+  # ============================================================
+  
+  segretaria:
+    id: "segretaria"
+    name: "Segretaria"
+    role: "Segretaria Scolastica"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, mature woman, (chubby:1.2), (short red hair:1.3), round glasses, warm smile, professional secretary outfit, white blouse, black skirt, office setting, approachable, friendly expression"
+    visual_tags: ["red hair", "short hair", "chubby", "glasses", "mature woman"]
+    physical_description: "Woman around 45 years old, plump but friendly, very short red hair and round glasses. Has a motherly yet professional air."
+    personality: "Kind, organized, slightly gossipy"
+    voice_tone: "Warm, slightly hoarse from smoking"
+    aliases: ["segretaria", "signora in segreteria", "la rossa"]
+    spawn_locations: ["school_secretary", "school_office_luna"]
+    schedule:
+      Morning: "In segreteria, organizza pratiche"
+      Afternoon: "In segreteria, pranzo veloce alla scrivania"
+      Evening: "Sta chiudendo, sistema l'ultimo archivio"
+    recurring: true
+    importance: "medium"
+  
+  preside:
+    id: "preside"
+    name: "Preside Bianchi"
+    role: "Preside del Liceo"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, (fat man:1.4), (bald:1.3), sweaty forehead, dark suit, tie, authoritative pose, 55 years old, severe expression, office background, powerful presence"
+    visual_tags: ["bald", "fat", "sweaty", "suit", "mature man"]
+    physical_description: "Man around 55 years old, corpulent, completely bald with shiny sweaty skin. Always wears dark clothes and has an authoritative air."
+    personality: "Strict, bureaucratic, but fair"
+    voice_tone: "Nasal, authoritative, slightly pompous"
+    aliases: ["preside", "direttore", "signor preside"]
+    spawn_locations: ["school_entrance", "school_corridor"]
+    schedule:
+      Morning: "Fa annunci dall'altoparlante"
+      Afternoon: "In riunione o in giro per la scuola"
+      Evening: "Ufficio, controlla carte"
+    recurring: true
+    importance: "high"
+  
+  bidello_mario:
+    id: "bidello_mario"
+    name: "Mario (Bidello)"
+    role: "Bidello"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, elderly man, (grey hair:1.2), mustache, blue overalls, work clothes, maintenance tools, friendly smile, tired eyes, 60 years old"
+    visual_tags: ["grey hair", "mustache", "overalls", "old man"]
+    physical_description: "Elderly man around 60 years old, grey hair, well-groomed mustache, always in blue work overalls. Smiles often but has tired eyes."
+    personality: "Gentle, tired, nostalgic"
+    voice_tone: "Hoarse, calm"
+    aliases: ["bidello", "l'uomo delle pulizie", "mario"]
+    spawn_locations: ["school_corridor", "school_storage"]
+    schedule:
+      Morning: "Pulizie mattutine"
+      Afternoon: "Riparazioni varie"
+      Evening: "Sta finendo il turno"
+    recurring: true
+    importance: "low"
+  
+  guardiano:
+    id: "guardiano"
+    name: "Guardiano Notturno"
+    role: "Sicurezza"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1man, security guard, dark uniform, flashlight in hand, serious expression, night setting, (shadows:1.2), suspicious look, 50 years old, cap"
+    visual_tags: ["uniform", "flashlight", "night", "security"]
+    physical_description: "Man around 50 years old, dark uniform, always holding a flashlight. Suspicious and attentive gaze."
+    personality: "Suspicious, diligent, solitary"
+    voice_tone: "Dry, direct, terse"
+    aliases: ["guardiano", "sicurezza", "uomo notturno"]
+    spawn_locations: ["school_entrance", "school_corridor"]
+    schedule:
+      Night: "Giri di sicurezza"
+    recurring: true
+    importance: "medium"
+  
+  # ============================================================
+  # STUDENTI RICORRENTI
+  # ============================================================
+  
+  studente_perso:
+    id: "studente_perso"
+    name: "Studente del Primo Anno"
+    role: "Studente"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, young student, 16 years old, confused expression, school uniform, carrying books, lost look, innocent face, corridor background"
+    visual_tags: ["young", "student", "confused", "uniform"]
+    physical_description: "First-year boy, 16 years old, innocent and lost expression. Wears school uniform and carries books."
+    personality: "Shy, lost, polite"
+    voice_tone: "High-pitched, insecure"
+    aliases: ["ragazzo", "studente", "primo anno"]
+    spawn_locations: ["school_corridor", "school_entrance"]
+    recurring: false
+    importance: "low"
+  
+  studentessa_lacrime:
+    id: "studentessa_lacrime"
+    name: "Studentessa Anonima"
+    role: "Studente"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, young student, 17 years old, (crying:1.3), mascara running down cheeks, sitting on floor, bathroom setting, distressed, blonde hair, school uniform"
+    visual_tags: ["crying", "young", "blonde hair", "uniform"]
+    physical_description: "Girl of 17 years old, blonde, in school uniform. Mascara running down her cheeks, sitting on the bathroom floor."
+    personality: "Vulnerable, heartbroken"
+    voice_tone: "Sobbing, hoarse from crying"
+    aliases: ["ragazza", "studentessa", "la bionda"]
+    spawn_locations: ["school_bathroom_female"]
+    recurring: false
+    importance: "low"
+  
+  studente_bully:
+    id: "studente_bully"
+    name: "Branco di Bulli"
+    role: "Studenti Antagonisti"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 2boys, young students, 18 years old, arrogant expressions, school uniforms worn messy, mocking poses, corridor background, aggressive stance"
+    visual_tags: ["young", "arrogant", "uniform", "group"]
+    physical_description: "Group of boys, 18 years old, loose uniforms, arrogant and bullying attitude."
+    personality: "Villainous, bullying, rude"
+    voice_tone: "Brash, rude, mocking"
+    aliases: ["bulli", "ragazzi", "branco"]
+    spawn_locations: ["school_corridor"]
+    recurring: true
+    importance: "medium"
+  
+  # ============================================================
+  # PERSONAGGI DI PAESE
+  # ============================================================
+  
+  barista:
+    id: "barista"
+    name: "Barista"
+    role: "Barista del Paese"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1man, italian barista, 40 years old, white apron, espresso machine, behind counter, friendly smile, mustache, dark hair, bar background"
+    visual_tags: ["apron", "mustache", "bar", "mature man"]
+    physical_description: "Man around 40 years old, mustache, white apron, behind the bar counter. Always smiling."
+    personality: "Expansive, curious, gossipy"
+    voice_tone: "Warm, dialectal, friendly"
+    aliases: ["barista", "titolare", "il tipo del bar"]
+    spawn_locations: ["bar_town"]
+    schedule:
+      Morning: "Prepara il caffè per i clienti"
+      Afternoon: "Servizio pranzo"
+      Evening: "Aperitivo, locale pieno"
+      Night: "Chiude il bar"
+    recurring: true
+    importance: "low"
+  
+  # ============================================================
+  # PROFESSORI SECONDARI
+  # ============================================================
+  
+  professoressa_inglese:
+    id: "professoressa_inglese"
+    name: "Professoressa di Inglese"
+    role: "Insegnante"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, mature woman, 45 years old, elegant dress, strict expression, glasses, holding book, classroom background, professional, blonde hair in bun"
+    visual_tags: ["blonde hair", "glasses", "elegant", "mature woman"]
+    physical_description: "Donna sui 45 anni, bionda raccolta, elegante, occhiali, aria severa."
+    personality: "Severa, precisa, professionale"
+    voice_tone: "Formale, corretta"
+    aliases: ["professoressa", "insegnante di inglese", "quella dell'inglese"]
+    spawn_locations: ["school_corridor", "school_classroom"]
+    recurring: true
+    importance: "low"
+
+# ============================================================
+# FALLBACK - NPC Generico Femminile
+# ============================================================
+
+fallback_female:
+  base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, detailed face, natural lighting"
+  visual_tags: ["1girl", "detailed"]
+
+  # ============================================================
+  # ALTRO STAFF SCOLASTICO
+  # ============================================================
+  
+  cuoca:
+    id: "cuoca"
+    name: "Cuoca della Mensa"
+    role: "Cuoca"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, mature woman, (plump:1.2), (grey hair bun:1.2), white chef uniform, apron, flour on face, warm smile, kitchen background, 50 years old, motherly expression"
+    visual_tags: ["grey hair", "hair bun", "plump", "chef uniform", "mature woman"]
+    physical_description: "Woman around 50 years old, plump, grey hair in a bun, white chef uniform with apron. Flour often on her face, warm motherly smile."
+    personality: "Maternal, generous, protective of students"
+    voice_tone: "Warm, loud, cheerful"
+    aliases: ["cuoca", "signora della mensa", "la cuoca", "cook"]
+    spawn_locations: ["school_cafeteria"]
+    schedule:
+      Morning: "Preparing breakfast"
+      Afternoon: "Serving lunch, watching students eat"
+      Evening: "Cleaning kitchen, preparing for tomorrow"
+    recurring: true
+    importance: "low"
+  
+  bibliotecaria:
+    id: "bibliotecaria"
+    name: "Bibliotecaria"
+    role: "Bibliotecaria"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, mature woman, (long black hair:1.3), glasses, strict expression, elegant dark dress, books in hands, library background, 35 years old, mysterious aura"
+    visual_tags: ["black hair", "long hair", "glasses", "elegant", "mature woman"]
+    physical_description: "Woman around 35 years old, long black hair, glasses, elegant dark clothing. Strict but mysterious expression, always surrounded by books."
+    personality: "Strict, mysterious, knowledgeable, secretly romantic"
+    voice_tone: "Soft, precise, slightly mysterious"
+    aliases: ["bibliotecaria", "la signora dei libri", "librarian"]
+    spawn_locations: ["school_library"]
+    schedule:
+      Morning: "Organizing books at the desk"
+      Afternoon: "Reading in the corner, watching students"
+      Evening: "Closing the library, dim lighting"
+    recurring: true
+    importance: "medium"
+  
+  infermiera:
+    id: "infermiera"
+    name: "Infermiera Scolastica"
+    role: "Infermiera"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, young woman, (blonde ponytail:1.2), nurse uniform, white stockings, caring smile, medical office background, 26 years old, friendly expression, holding thermometer"
+    visual_tags: ["blonde hair", "ponytail", "nurse uniform", "young woman"]
+    physical_description: "Young woman around 26 years old, blonde hair in a ponytail, white nurse uniform with white stockings. Friendly caring smile, always ready with a thermometer."
+    personality: "Caring, slightly naive, professional but sweet"
+    voice_tone: "Soft, reassuring, gentle"
+    aliases: ["infermiera", "signorina dell'ambulatorio", "nurse", "la bionda"]
+    spawn_locations: ["school_corridor", "school_entrance"]
+    schedule:
+      Morning: "In the infirmary, checking supplies"
+      Afternoon: "Treating minor injuries"
+      Evening: "Still on duty if students need help"
+    recurring: true
+    importance: "medium"
+  
+  allenatore:
+    id: "allenatore"
+    name: "Professore di Educazione Fisica"
+    role: "Allenatore"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, athletic man, (muscular:1.3), short brown hair, tracksuit, whistle around neck, gym background, 40 years old, confident pose, sweat on skin"
+    visual_tags: ["muscular", "athletic", "short hair", "tracksuit", "mature man"]
+    physical_description: "Athletic man around 40 years old, muscular build, short brown hair. Always in tracksuit with whistle around neck, confident and energetic."
+    personality: "Energetic, slightly arrogant, competitive"
+    voice_tone: "Loud, commanding, encouraging"
+    aliases: ["allenatore", "professore di ginnastica", "il muscoloso", "coach"]
+    spawn_locations: ["school_gym", "school_corridor"]
+    schedule:
+      Morning: "Training in the gym"
+      Afternoon: "Supervising sports activities"
+      Evening: "Locking the gym"
+    recurring: true
+    importance: "low"
+  
+  # ============================================================
+  # FALLBACK - NPC Generico Maschile
+  # ============================================================
+
+fallback_male:
+  base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, detailed face, natural lighting"
+  visual_tags: ["1boy", "detailed"]

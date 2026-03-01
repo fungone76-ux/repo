@@ -17,7 +17,7 @@ global_events:
     
     trigger:
       type: "random"
-      chance: 0.15
+      chance: 0.35  # Aumentato da 0.15
       allowed_times: ["Afternoon", "Evening"]
     
     effects:
@@ -53,7 +53,7 @@ global_events:
     
     trigger:
       type: "random"
-      chance: 0.08
+      chance: 0.25  # Aumentato da 0.08
       allowed_times: ["Afternoon", "Evening"]
     
     effects:
@@ -89,7 +89,7 @@ global_events:
           operator: "eq"
           value: "Evening"
         - type: "random"
-          chance: 0.4
+          chance: 0.55  # Aumentato da 0.4
     
     effects:
       duration: 2
@@ -120,7 +120,7 @@ global_events:
           operator: "lt"
           value: 40
         - type: "random"
-          chance: 0.3
+          chance: 0.50  # Aumentato da 0.3
     
     effects:
       duration: 2
@@ -150,7 +150,7 @@ global_events:
           operator: "in"
           value: ["school_corridor", "school_entrance"]
         - type: "random"
-          chance: 0.25
+          chance: 0.45  # Aumentato da 0.25
     
     effects:
       duration: 1
@@ -182,7 +182,7 @@ global_events:
           operator: "eq"
           value: "Evening"
         - type: "random"
-          chance: 0.2
+          chance: 0.40  # Aumentato da 0.2
     
     effects:
       duration: 3

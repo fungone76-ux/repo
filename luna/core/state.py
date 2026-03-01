@@ -286,11 +286,77 @@ class StateManager:
         
         self.current.active_companion = companion
         
+        # V3.1 FIX: Initialize outfit from wardrobe if not set
+        self._ensure_companion_outfit(companion)
+        
         # If outfit specified, update it
         if outfit:
             self.set_outfit_style(outfit)
         
         return True
+    
+    def _ensure_companion_outfit(self, companion: str) -> None:
+        """Ensure companion has an outfit initialized from their wardrobe.
+        
+        If outfit doesn't exist or has no description, creates it from wardrobe.
+        """
+        from luna.core.models import OutfitState
+        
+        # Check if outfit exists and has description
+        current_outfit = self.current.get_outfit(companion)
+        if current_outfit and current_outfit.description:
+            return  # Already has outfit with description
+        
+        # Need to initialize from world wardrobe
+        # Import here to avoid circular imports
+        try:
+            from luna.systems.world import get_world_loader
+            world = get_world_loader().load_world(self.current.world_id)
+            if not world:
+                return
+            
+            companion_def = world.companions.get(companion)
+            if not companion_def or not companion_def.wardrobe:
+                return
+            
+            # Get default outfit from wardrobe
+            default_style = companion_def.default_outfit or next(iter(companion_def.wardrobe.keys()))
+            wardrobe_def = companion_def.wardrobe[default_style]
+            
+            # Extract description
+            if isinstance(wardrobe_def, str):
+                outfit_desc = wardrobe_def
+            else:
+                outfit_desc = getattr(wardrobe_def, 'sd_prompt', '') or \
+                             getattr(wardrobe_def, 'description', default_style)
+            
+            # Parse components
+            components = {}
+            desc_lower = outfit_desc.lower()
+            if 'shirt' in desc_lower or 'blouse' in desc_lower or 'top' in desc_lower:
+                components['top'] = 'shirt'
+            if 'skirt' in desc_lower:
+                components['bottom'] = 'skirt'
+            if 'pants' in desc_lower or 'jeans' in desc_lower or 'trousers' in desc_lower:
+                components['bottom'] = 'pants'
+            if 'dress' in desc_lower:
+                components['dress'] = 'dress'
+            if 'shoes' in desc_lower or 'heels' in desc_lower:
+                components['shoes'] = 'shoes'
+            if 'jacket' in desc_lower or 'blazer' in desc_lower:
+                components['outerwear'] = 'jacket'
+            
+            # Create and set outfit
+            outfit = OutfitState(
+                style=default_style,
+                description=outfit_desc,
+                components=components,
+            )
+            self.current.set_outfit(outfit, companion)
+            print(f"[StateManager] Initialized outfit for {companion}: {default_style}")
+            
+        except Exception as e:
+            print(f"[StateManager] Failed to initialize outfit for {companion}: {e}")
     
     def set_outfit(self, outfit: str) -> None:
         """Set outfit for active companion (legacy - sets style only).

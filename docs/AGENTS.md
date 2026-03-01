@@ -1,148 +1,249 @@
 # Luna RPG v4 - Stato Progetto
 
-## Data: 2026-02-24
+## Data: 2026-03-01
 
 ---
 
-## Sistema Video Completato ✅
+## Novità del Giorno ✅
 
-### Workflow Video Attivo
-File: `comfy_workflow_video.json`
+### 1. Dynamic Events System V2 - Eventi Non Bloccanti ⭐
+
+**File:**
+- `src/luna/systems/dynamic_events.py` - Gestione eventi
+- `src/luna/ui/widgets.py` - GlobalEventWidget con scelte integrate
+- `src/luna/core/engine.py` - Integrazione nel flusso di gioco
 
 **Caratteristiche:**
-- **Modello**: Wan2.1 I2V (Image-to-Video)
-- **Durata**: ~10 secondi (162 frame @ 16fps)
-- **Risoluzione**: 480x896
-- **Frame interpolation**: RIFE 2x (da 81 a 162 frame)
-- **Colori**: Prompt ottimizzato per saturazione e contrasto
+- ✅ Eventi **non bloccano** la conversazione con Luna
+- ✅ Eventi mostrati nel **widget Event** (sinistra)
+- ✅ Utente può scegliere cliccando i bottoni **o** continuare a scrivere
+- ✅ **Grace period** di 5 turni dopo skip (evita spam eventi)
+- ✅ Supporto pattern **prima persona singolare** ("alzo", "tolgo", etc.)
 
-### Nodi Custom Installati su RunPod
-
-1. **ComfyUI-Frame-Interpolation** (RIFE VFI)
-   - Repository: `Fannovel16/ComfyUI-Frame-Interpolation`
-   - Modello: `rife47.pth` in `ckpts/rife/`
-   - Parametri: `clear_cache_after_n_frames: 10`
-
-2. **ComfyUI-KJNodes**
-   - Repository: `kijai/ComfyUI-KJNodes`
-   - Nodi usati: `ImageResizeKJv2`
-
-3. **ComfyUI-WanVideoWrapper**
-   - Repository: `kijai/ComfyUI-WanVideoWrapper`
-   - Nodo: `WanImageToVideo`
-
-4. **ComfyUI-VideoHelperSuite**
-   - Repository: `Kosinkadink/ComfyUI-VideoHelperSuite`
-   - Nodo: `VHS_VideoCombine`
-
-5. **ComfyUI-GGUF**
-   - Repository: `city96/ComfyUI-GGUF`
-   - Nodo: `UnetLoaderGGUF`
-
-### Configurazione Modello RIFE
-
-```bash
-# Crea directory per il modello
-mkdir -p /workspace/ComfyUI/custom_nodes/ComfyUI-Frame-Interpolation/ckpts/rife
-
-# Scarica rife47.pth
-wget -O /workspace/ComfyUI/custom_nodes/ComfyUI-Frame-Interpolation/ckpts/rife/rife47.pth \
-  "https://github.com/hzwer/Practical-RIFE/releases/download/v4.7/rife47.pth"
-
-# Oppure se già presente in models/:
-ln -sf /workspace/ComfyUI/models/frame_interpolation/rife/rife47.pth \
-  /workspace/ComfyUI/custom_nodes/ComfyUI-Frame-Interpolation/ckpts/rife/rife47.pth
+**Flusso corretto:**
 ```
-
-### Flusso Workflow
-
-```
-1. UnetLoaderGGUF (Wan2.1_I2V_fp8)
-2. VAELoader (wan_2.1_vae)
-3. CLIPLoader (umt5_xxl_fp8)
-4. LoadImage (input.png)
-5. CLIPTextEncode (prompt positivo con colori saturati)
-6. CLIPTextEncode (prompt negativo)
-7. CLIPVisionLoader
-8. CLIPVisionEncode
-9. ImageResizeKJv2 (480x896)
-10. WanImageToVideo (81 frame)
-11. LoraLoader HIGH
-12. LoraLoader LOW
-13. KSamplerAdvanced 1/2
-14. KSamplerAdvanced 2/2
-15. VAEDecode
-16. RIFE VFI (2x interpolation → 162 frame) ⭐
-17. VHS_VideoCombine (output MP4)
-```
-
-### Prompt Ottimizzati
-
-**Positivo:**
-```
-Cinematic photorealistic video, beautiful woman, graceful natural movement, 
-detailed skin texture, soft lighting, continuous fluid motion, 8k masterpiece, 
-vibrant saturated colors, rich colors, high contrast, colorful, vivid
-```
-
-**Negativo:**
-```
-(deformed, distorted, disfigured:1.3), poor quality, bad anatomy, ugly, 
-text, watermark, blurry, low resolution, extra limbs, bad motion, morphing, 
-cartoon, anime, (faded colors:1.2), washed out, grayscale, monochrome
+Utente: "Buongiorno Luna!"
+   ↓
+Luna: "Buongiorno! Come stai?"
+   ↓
+Event Widget: 🎲 Morning Bell (persiste fino a interazione)
+   - 1. Vado in classe
+   - 2. Giro ancora un po'
+   - [Ignora]
+   ↓
+Utente: "Sto bene, tu?" (scrive normalmente)
+   ↓
+Luna: "Bene grazie!..."
+   ↓
+Event Widget: Morning Bell è ancora disponibile!
+   ↓
+Utente clicca "1" → Processa evento + Luna commenta
 ```
 
 ---
 
-## Sistema Auto-Switch Companion ✅
+### 2. Random Events & Daily Events - Espansione Contenuti
 
-### Funzionamento
-Quando il giocatore interagisce con un NPC non-companion, il sistema:
+**File:** 
+- `worlds/school_life_complete/random_events.yaml` (10 eventi)
+- `worlds/school_life_complete/daily_events.yaml` (12 eventi)
 
-1. **Rileva** il target dal testo (es. "vedo una donna...")
-2. **Crea** un companion temporaneo con `is_temporary=True`
-3. **Switcha** il companion attivo
-4. **Usa** NPC_BASE per l'immagine (senza LoRA dei companion)
-5. **Salta** il personality engine (non modifica affinità)
+**Random Events (10 totali):**
+| Evento | Descrizione | Chance |
+|--------|-------------|--------|
+| lost_student | Studente perso chiede aiuto | 25% |
+| phone_call | Telefono squilla in segreteria | 20% |
+| found_item | Trovi qualcosa per terra | 30% |
+| overhear_conversation | Senti pettegolezzi | 35% |
+| sudden_rain | Temporale estivo | 20% |
+| vending_machine | Distributore bloccato | 25% |
+| locked_door | Porta socchiusa (mistero) | 15% |
+| music_from_gym | Musica dalla palestra | 20% |
+| crying_girl | Ragazza che piange in bagno | 18% |
+| teachers_lounge | Sala professori aperta | 12% |
 
-### File Modificati
-- `src/luna/core/engine.py`: `_detect_generic_npc_interaction()`, `_create_temporary_companion()`
-- `src/luna/core/models.py`: `is_temporary` flag in `CompanionDefinition`
-- `src/luna/systems/personality.py`: skip per NPC temporanei
-- `src/luna/media/builders.py`: supporto `base_prompt` parametro
+**Daily Events (12 totali - per fascia oraria):**
+- **Mattina:** Campanella, Colazione, Annunci
+- **Pomeriggio:** Pranzo, Club extracurriculari, Punizioni
+- **Sera:** Pulizie, Professori straordinari, Tramonto, Preparativi notte
+- **Notte:** Scuola misteriosa, Guardiano, Messaggi
 
 ---
 
-## Debug Mode ✅
+### 3. Outfit Modifier - Pattern Prima Persona
 
-Flag `--no-media` per testare senza ComfyUI:
+**File:** `src/luna/systems/outfit_modifier.py`
 
-```bash
-python -m luna --no-media
+**Pattern aggiunti:**
+- `alzo` / `sollevo` - per gonna/vestito
+- `tolgo` / `levato` - per togliere capi
+- `sbottono` - per camicia
+- `strappo` - per calze
+- `abbasso` - per pantaloni
+- `apro` - per vestiti/cerniere
+- `allento` - per cravatta
+
+**Esempi riconosciuti:**
+- "Alzo la gonna di Luna"
+- "Tolgo il reggiseno"
+- "Strappo le calze"
+- "Apro il vestito"
+
+---
+
+### 4. NPC Templates - Personaggi Secondari Consistenti
+
+**File:** `worlds/school_life_complete/npc_templates.yaml`
+
+**14 NPC con identità visiva definita:**
+
+| NPC | Aspetto | Location |
+|-----|---------|----------|
+| **Segretaria** | Paffuta, capelli rossi corti, occhiali | Segreteria |
+| **Preside Bianchi** | Grasso, calvo, sudato, 55 anni | Annunci |
+| **Bidello Mario** | 60 anni, grigio, baffi, tuta blu | Corridoio |
+| **Guardiano Notturno** | Uniforme, torcia, diffidente | Notte |
+| **Studente Perso** | 16 anni, confuso, primo anno | Corridoio |
+| **Studentessa in Lacrime** | 17 anni, bionda, mascara colato | Bagno |
+| **Bulli** | 18 anni, arroganti, prepotenti | Quest Maria |
+| **Barista** | 40 anni, baffi, grembiule | Bar |
+| **Professoressa Inglese** | 45 anni, bionda raccolta, severa | Aula |
+| **Cuoca** | 50 anni, formosa, capelli grigi a chignon | Mensa |
+| **Bibliotecaria** | 35 anni, neri lunghi, misteriosa | Biblioteca |
+| **Infermiera** | 26 anni, bionda a coda, uniforme bianca | Infermeria |
+| **Allenatore** | 40 anni, muscoloso, tuta, fischietto | Palestra |
+
+**Caratteristiche:**
+- ✅ `base_prompt` in inglese per Stable Diffusion
+- ✅ `visual_tags` per consistenza immagini
+- ✅ `personality` e `voice_tone` in inglese per LLM
+- ✅ Sistema di **cache**: stesso NPC = stesso aspetto sempre!
+
+---
+
+### 5. Multi-NPC System - Affinity Requirement Abbassata
+
+**File:** `src/luna/systems/multi_npc/manager.py`
+
+```python
+# Prima
+MIN_PLAYER_AFFINITY = 20
+
+# Dopo
+MIN_PLAYER_AFFINITY = 5
 ```
 
-Salta generazione immagini/video, mantiene solo LLM e audio.
+**Cooldown:** 3 turni tra interventi dello stesso NPC
+
+**Risultato:** Interazioni multi-NPC molto più frequenti!
 
 ---
 
-## Problemi Risolti
+### 6. Global Events - Probabilità Aumentate
 
-| Problema | Soluzione |
-|----------|-----------|
-| Video troppo corto (5 sec) | Aggiunto RIFE 2x → 10 sec |
-| Colori slavati | Prompt con "vibrant saturated colors, high contrast" |
-| Nodo RIFE mancante | Installato ComfyUI-Frame-Interpolation + rife47.pth |
-| Error 400 su RIFE | Aggiunto `clear_cache_after_n_frames: 10` |
-| Companion parla per NPC | Implementato auto-switch con NPC temporanei |
-| Error 404 su Gemini fallback | Fix nomi modelli: `gemini-1.5-pro-latest`, `gemini-1.5-flash-latest` |
-| Config modelli hardcoded | Creato `src/luna/config/models.yaml` per configurazione esterna |
-| JSON parse errors frequenti | Aggiunto `src/luna/ai/json_repair.py` per repair automatico |
-| StateUpdate validation failed | Fix: gestione errori validazione Pydantic (updates = StateUpdate() vuoto) |
-| NPC temporaneo non switcha | Fix: aggiunto NPC ad affinity system in `_create_temporary_companion` |
-| Prompt SD con doppioni | Fix: rimossa istruzione dal system prompt che diceva al LLM di includere base prompt + migliorato detection duplicati |
-| Outfit descrizione mancante | Fix: `ImagePromptBuilder` ora aggiunge outfit al prompt + system prompt istruisce LLM a descrivere vestiti |
-| "studentessa" non switcha a Stella | Fix: aggiunto "studentessa" ai role patterns + aggiunti aliases per tutti i companion |
-| LLM include vecchio companion dopo switch | Fix: aggiunta sezione "COMPANION SWITCH" nel system prompt che impone focus solo sul nuovo NPC |
+**File:** `worlds/school_life_complete/global_events.yaml`
+
+| Evento | Prima | Ora |
+|--------|-------|-----|
+| Temporale | 15% | **35%** |
+| Blackout | 8% | **25%** |
+| Maria Cleaning | 40% | **55%** |
+| Stella Entourage | 30% | **50%** |
+| Luna Discipline | 25% | **45%** |
+| Aula Vuota | 20% | **40%** |
+
+---
+
+### 7. UI: Story Beats Widget
+
+**File:** `src/luna/ui/widgets.py` - `StoryBeatsWidget`
+
+Mostra i **story beats** del companion attivo:
+- Progresso per affinità
+- Beats completati ✅
+- Beats bloccati 🔒 (con requisito visibile)
+
+```
+┌─ 🎭 Story Beats (Luna) ─────────────┐
+│ ✅ Confessione Divorzio (40)        │
+│ 🟢 Lezione Privata (60) pronta!     │
+│ 🔒 Scelta Finale (90)               │
+│ Progresso: 1/3 beats completati     │
+└─────────────────────────────────────┘
+```
+
+---
+
+### 8. UI: Quest Tracker con Bottone Attivazione
+
+**File:** `src/luna/ui/widgets.py` - `QuestTrackerWidget`
+
+**Nuove funzionalità:**
+- Filtro per **companion attivo** (mostra solo quest di Luna/Stella/Maria)
+- Icone: ⭐ disponibile | 🟢 attiva | ✅ completata
+- **Bottone "🎯 Clicca qui per attivare"** per forzare attivazione quest
+
+```
+┌─ 📋 Quest (Luna) ───────────────────┐
+│ ⭐ Lezione Privata                  │
+│   [🎯 Clicca qui per attivare]     │
+│                                     │
+│ ✅ Benvenuto a Scuola               │
+└─────────────────────────────────────┘
+```
+
+---
+
+### 9. GlobalEventWidget con Scelte Integrate
+
+**File:** `src/luna/ui/widgets.py` - `GlobalEventWidget`
+
+**Widget Event rivisitato:**
+- Mostra eventi globali e dinamici
+- **Bottoni scelta** per eventi con opzioni
+- Pulsante **"Ignora"** per saltare evento
+- Non blocca input testuale
+- Aggiornamento in tempo reale
+
+```
+┌─ 🌍 Event ─────────────────────────┐
+│ 🎲 Morning Bell                    │
+│ La campanella risuona...           │
+│                                    │
+│ [1. Vado in classe]  [2. Giro...] │
+│ [Ignora]                           │
+└────────────────────────────────────┘
+```
+
+---
+
+## Riepilogo Contenuti Totali
+
+| Categoria | Numero |
+|-----------|--------|
+| **Quest** | 12 |
+| **Story Beats** | 9 |
+| **Global Events** | 6 |
+| **Random Events** | 10 |
+| **Daily Events** | 12 |
+| **NPC Templates** | 14 |
+| **Outfit** | 18 |
+| **Location** | 19 |
+| **TOTALE** | **~100** |
+
+---
+
+## Documentazione Disponibile
+
+| File | Descrizione |
+|------|-------------|
+| `docs/QUEST_CHOICE_SYSTEM.md` | Guida completa sistema scelte |
+| `docs/QUEST_SPECIFICATION.md` | Specifiche sistema quest |
+| `docs/EVENT_SYSTEM_SPEC.md` | Sistema eventi globali |
+| `docs/MULTI_NPC_SYSTEM.md` | Gestione multipli NPC |
+| `docs/PERSONALITY_SYSTEM.md` | Analisi personalità player |
+| `docs/WORLD_CREATION_GUIDE.md` | Come creare nuovi world |
+| `docs/RUNPOD_DAILY_STARTUP.md` | Avvio giornaliero RunPod |
 
 ---
 
@@ -150,131 +251,66 @@ Salta generazione immagini/video, mantiene solo LLM e audio.
 
 File: `src/luna/config/models.yaml`
 
-Modifica i modelli senza toccare il codice:
-
 ```yaml
 gemini:
-  primary: "gemini-3-pro-preview"
+  primary: "gemini-2.0-flash"
   fallbacks:
-    - "gemini-2.0-flash"
     - "gemini-1.5-pro-latest"
     - "gemini-1.5-flash-latest"
-  
   temperature: 0.95
   max_tokens: 2048
-
-moonshot:
-  primary: "kimi-k2.5"
-  temperature: 0.9
 ```
-
-### Modelli disponibili (Google AI)
-- `gemini-3-pro-preview` - **Modello primario** - Ultimo modello Pro (preview)
-- `gemini-2.0-flash` - Veloce, buono per la maggior parte dei casi
-- `gemini-1.5-pro-latest` - Modello Pro stabile
-- `gemini-1.5-flash-latest` - Flash veloce ed economico
-
-### JSON Repair Automatico
-
-File: `src/luna/ai/json_repair.py`
-
-Ripara automaticamente JSON malformato:
-- Trailing commas
-- Missing commas
-- Single quotes → double quotes
-- Unquoted keys
-- Newlines in strings
-- Markdown code blocks
-- Comments
 
 ---
 
-## Avvio RunPod Giornaliero
+## API Key Richieste (`.env`)
 
-**Problema:** Ogni riavvio devi reinstallare? **No!** I file sono già lì.
-
-**Guida completa:** `docs/RUNPOD_DAILY_STARTUP.md`
-
-### Avvio Rapido (se hai già installato)
 ```bash
-# 1. Libera porta se occupata
-pkill -f "python main.py" 2>/dev/null || true
-sleep 3
-
-# Se ancora occupata, uccidi tutti i processi Python
-ps aux | grep python | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true
-sleep 3
-
-# 2. Avvia ComfyUI
-cd /workspace/ComfyUI && python main.py --listen 0.0.0.0 --port 8188
+GEMINI_API_KEY=your_key_here
+MOONSHOT_API_KEY=your_key_here  # fallback
 ```
 
-### Script Automatico (salva una volta)
-```bash
-# Crea script di avvio
-cat > /workspace/start_comfyui.sh << 'EOF'
-#!/bin/bash
-echo "Pulizia processi..."
-pkill -f "python main.py" 2>/dev/null || true
-sleep 2
-ps aux | grep python | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true
-sleep 2
-echo "Avvio ComfyUI..."
-cd /workspace/ComfyUI && python main.py --listen 0.0.0.0 --port 8188
-EOF
-chmod +x /workspace/start_comfyui.sh
+---
 
-# Usa sempre questo per avviare
-/workspace/start_comfyui.sh
-```
+## World Creati
 
-**Importante:** 
-- Usa sempre **"Resume"** sul Pod esistente, non crearne uno nuovo
-- I file in `/workspace/` persistono (nodi, modelli, pacchetti pip)
-- **NON devi reinstallare requirements.txt ad ogni avvio!** (solo se crei Pod nuovo)
+| World | Stato | Companion | Location | Eventi |
+|-------|-------|-----------|----------|--------|
+| **school_life_complete** | ✅ Completo | Luna, Stella, Maria | 19 | 28 (6+10+12) |
 
 ---
 
-## Stato API LLM
+## Problemi Risolti Recenti
 
-⚠️ Richiede configurazione API keys in `.env`:
-- `GEMINI_API_KEY=` (per generazione testo)
-- `MOONSHOT_API_KEY=` (fallback)
-
----
-
-## ✅ Random & Daily Events System - IMPLEMENTATO
-
-**Data:** 2026-02-25
-
-### File Creati/Modificati
-- ✅ `src/luna/systems/dynamic_events.py` - Nuovo sistema (517 righe)
-- ✅ `src/luna/systems/gameplay_manager.py` - Integrazione
-- ✅ `src/luna/core/engine.py` - Flusso di gioco aggiornato
-- ✅ `docs/WORLD_CREATION_GUIDE.md` - Documentazione completa
-
-### Funzionalità
-- **Random Events**: Eventi casuali basati su location/weight con scelte multiple
-- **Daily Events**: Eventi orari (Morning/Afternoon/Evening/Night) con effetti automatici
-- **Cooldown system**: Previene ripetizioni troppo frequenti
-- **Stat checks**: D20 roll contro statistiche del player
-- **Effetti**: Affinità, items, stats, flags
-
-### Esempi nel World Preistorico
-- 20 Random Events (bambini_giocano, trappola_cacciatori, mercante_conchiglie...)
-- 15 Daily Events (sveglia_villaggio, preparazione_caccia, riposo_caldo...)
+| Problema | Soluzione |
+|----------|-----------|
+| Eventi bloccano conversazione | Dynamic Events V2 (non-blocking) |
+| Eventi si ripetono dopo skip | Grace period 5 turni |
+| Pattern outfit solo terza persona | Aggiunti pattern prima persona |
+| Skip evento errore AttributeError | Fix path gameplay_manager.event_manager |
+| Evento skippato automaticamente | Persistenza evento nel widget fino a scelta |
+| Affinità inconsistente LLM | Affinity Calculator deterministico |
+| Scelte quest ambigue | Quest Choice System UI-based |
+| Companion location sconosciuta | Companion Locator Widget |
+| Progress non persistente | Save/Load database SQLite |
+| Movimento poco intuitivo | Verbi italiani pattern matching |
+| NPC generici senza identità | NPC Templates con cache |
+| Multi-NPC mai attivo | Affinity requirement 20→5 |
+| Outfit "No description" | Fallback wardrobe description |
+| Falsi saluti | Fix farewell detection |
 
 ---
 
-## Prossimi Step Consigliuti
+## Prossimi Step Consigliati
 
-1. ✅ Configurare API keys per LLM
-2. ✅ Testare generazione video completa
-3. ✅ Random & Daily Events System
-4. ⬜ Aggiungere più hint NPC per fantasy/sci-fi worlds
-5. ⬜ Ottimizzare traduzione IT→EN per SD prompts
-6. ⬜ Testare con modelli video più lunghi (160 frame nativi)
+1. ✅ **Dynamic Events V2** (non-blocking)
+2. ✅ **Pattern outfit prima persona**
+3. ✅ **Event widget con scelte**
+4. ⬜ **Test gameplay end-to-end**
+5. ⬜ Bilanciamento valori affinità
+6. ⬜ Aggiungere più quest con tipo "choice"
+7. ⬜ Tutorial iniziale per nuovi giocatori
 
 ---
 
-*Ultimo aggiornamento: 2026-02-25*
+*Ultimo aggiornamento: 2026-03-01*

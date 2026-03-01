@@ -1,8 +1,14 @@
 pip install sqlalchemy aiohttp fastapi uvicorn pillow torch torchvision torchaudio
+pip install chromadb sentence-transformers
 pip install opencv-python opencv-contrib-python gitpython gguf
 pip install imageio imageio-ffmpeg moviepy av
 pip install accelerate toml ftfy
+pip install comfy-aimdo==0.1.7
 pip install diffusers transformers einops timm
 pip install -r requirements.txt
+pip install -r ComfyUI-KJNodes/requirements.txt
+pip install torchsde
+pip install color-matcher
 pkill -f "python main.py" && sleep 3
+ulimit -n 1048576
 cd /workspace/ComfyUI && python main.py --listen 0.0.0.0 --port 8188

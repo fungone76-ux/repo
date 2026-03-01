@@ -38,20 +38,25 @@ class LocationManager:
     def __init__(
         self,
         world: WorldDefinition,
-        game_state: GameState,
+        state_manager,
     ) -> None:
         """Initialize location manager.
         
         Args:
             world: World definition with locations
-            game_state: Current game state
+            state_manager: StateManager to access current game state dynamically
         """
         self.world = world
-        self.game_state = game_state
+        self.state_manager = state_manager
         
         # Runtime location instances
         self._instances: Dict[str, LocationInstance] = {}
         self._init_instances()
+    
+    @property
+    def game_state(self) -> GameState:
+        """Get current game state dynamically."""
+        return self.state_manager.current
     
     def _init_instances(self) -> None:
         """Initialize location instances from world definition."""

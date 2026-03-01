@@ -1428,6 +1428,77 @@ Le immagini saranno coerenti: se una volta è a piedi nudi, tutte le immagini su
 
 ---
 
+## 👗 Outfit Modifier System (Deterministico)
+
+**File:** `src/luna/systems/outfit_modifier.py`
+
+Sistema per modificare l'outfit del companion in modo **deterministico** basato sull'input del player, **indipendentemente dall'LLM**.
+
+### Perché Serve
+
+L'LLM spesso "dimentica" di aggiornare l'outfit o non interpreta correttamente le descrizioni del player. Questo sistema:
+- **Rileva automaticamente** modifiche vestiario dall'input
+- **Applica immediatamente** senza aspettare l'LLM
+- **Persiste** finché non cambi esplicitamente
+
+### Pattern Riconosciuti (Input Player)
+
+#### Modifiche Parziali (Componenti)
+
+| Input Rilevato | Componente | Nuovo Valore |
+|----------------|------------|--------------|
+| "tolto le scarpe", "scalza", "senza scarpe" | shoes | barefoot |
+| "rimette le scarpe" | shoes | elegant high heels |
+| "tolto la giacca" | outerwear | none |
+| "sbottonata", "downblouse" | top | unbuttoned |
+| "senza reggiseno" | bra | none |
+| "calze strappate" | pantyhose | torn |
+| "gonna sollevata" | bottom | lifted |
+
+#### Major Changes (Outfit Completo)
+
+| Input Rilevato | Comportamento |
+|----------------|---------------|
+| "si cambia", "mette un altro" | Cambio completo outfit |
+| "abito da sera" | Sostituisce wardrobe con outfit custom |
+| "pigiama" | Outfit notte |
+| "bikini", "costume" | Swimsuit |
+
+### Persistenza
+
+**Outfit modificato resta tale finché:**
+1. Player richiede esplicitamente nuovo cambio
+2. Usa pulsante UI "Cambia" (random wardrobe)
+3. Usa pulsante UI "Modifica" (descrizione custom)
+4. (Opzionale) Reset al cambio giorno
+
+### Traduzione Automatica
+
+Il sistema traduce automaticamente descrizioni italiane in inglese per Stable Diffusion:
+
+```
+Player scrive: "bikini rosso attillato"
+Sistema traduce: "Red tight bikini"
+Prompt SD: "wearing red tight bikini, bare legs, sunbathing"
+```
+
+**Fallback:** Se l'LLM fallisce, usa traduzione base con dizionario integrato.
+
+### UI Widget Outfit
+
+Due pulsanti nel pannello sinistro:
+
+**🔄 Cambia:**
+- Seleziona random outfit dal wardrobe YAML
+- Coerente con le definizioni del character
+
+**✏️ Modifica:**
+- Apre dialog di input
+- Player descrive in italiano
+- Traduzione automatica e applicazione immediata
+
+---
+
 ## 🚶 Comandi di Movimento Naturali
 
 Il player si muove **scrivendo naturalmente**, non con comandi tecnici.

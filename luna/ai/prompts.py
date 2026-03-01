@@ -138,7 +138,7 @@ def get_response_schema() -> Dict[str, Any]:
             },
             "composition": {
                 "type": "string",
-                "enum": ["close_up", "medium_shot", "wide_shot", "group", "scene"],
+                "enum": ["close_up", "medium_shot", "cowboy_shot", "wide_shot", "from_below", "from_above", "group", "scene"],
                 "description": "Camera framing for image generation",
             },
             "updates": {

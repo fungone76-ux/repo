@@ -301,6 +301,9 @@ class QuestEngine:
         self.active_states: Dict[str, QuestInstance] = {}
         self._story_director = None  # Set via setter
         
+        # Quests awaiting player choice (not yet activated)
+        self.pending_choice_quests: Dict[str, dict] = {}
+        
         print(f"[QuestEngine] Loaded {len(self.definitions)} quest definitions")
     
     def set_story_director(self, story_director) -> None:
@@ -362,6 +365,13 @@ class QuestEngine:
                 if quest.trigger_event:
                     if game_state.flags.get(f"trigger_{quest.trigger_event}"):
                         activated.append(quest_id)
+            
+            elif quest.activation_type == "choice":
+                # Quests that require player choice - check conditions but don't auto-activate
+                if self._evaluate_conditions(activation, context):
+                    # Mark as pending choice, not activated yet
+                    # Return with special marker for UI handling
+                    activated.append(f"CHOICE:{quest_id}")
         
         return activated
     
@@ -423,6 +433,88 @@ class QuestEngine:
             narrative_context=start_stage.narrative_prompt if start_stage else "",
             hidden=quest.hidden,
         )
+    
+    def add_pending_choice(self, quest_id: str, game_state: GameState) -> Optional[dict]:
+        """Add a quest to pending choices (awaiting player decision).
+        
+        Args:
+            quest_id: Quest waiting for choice
+            game_state: Current game state
+            
+        Returns:
+            Choice data dict or None if quest not found
+        """
+        if quest_id not in self.definitions:
+            return None
+        
+        quest = self.definitions[quest_id]
+        
+        choice_data = {
+            "quest_id": quest_id,
+            "title": quest.choice_title or quest.title,
+            "description": quest.choice_description or quest.description,
+            "giver": quest.character or "Unknown",
+            "accept_text": quest.accept_button_text,
+            "decline_text": quest.decline_button_text,
+            "detected_at": game_state.turn_count,
+        }
+        
+        self.pending_choice_quests[quest_id] = choice_data
+        print(f"[QuestEngine] Quest '{quest.title}' awaiting player choice")
+        
+        return choice_data
+    
+    def get_pending_choices(self) -> List[dict]:
+        """Get all quests awaiting player choice.
+        
+        Returns:
+            List of choice data dicts
+        """
+        return list(self.pending_choice_quests.values())
+    
+    def has_pending_choice(self, quest_id: str) -> bool:
+        """Check if a quest is pending player choice.
+        
+        Args:
+            quest_id: Quest to check
+            
+        Returns:
+            True if quest is pending choice
+        """
+        return quest_id in self.pending_choice_quests
+    
+    def resolve_choice(
+        self,
+        quest_id: str,
+        accepted: bool,
+        game_state: GameState,
+    ) -> Optional[QuestActivationResult]:
+        """Resolve a pending quest choice.
+        
+        Args:
+            quest_id: Quest being resolved
+            accepted: True if player accepted, False if declined
+            game_state: Current game state
+            
+        Returns:
+            Activation result if accepted, None if declined
+        """
+        # Remove from pending
+        if quest_id in self.pending_choice_quests:
+            del self.pending_choice_quests[quest_id]
+        
+        if accepted:
+            # Activate the quest
+            print(f"[QuestEngine] Player ACCEPTED quest: {quest_id}")
+            return self.activate_quest(quest_id, game_state)
+        else:
+            # Player declined - quest stays inactive
+            print(f"[QuestEngine] Player DECLINED quest: {quest_id}")
+            return None
+    
+    def clear_pending_choices(self) -> None:
+        """Clear all pending choices (e.g., on new game)."""
+        self.pending_choice_quests.clear()
     
     def process_turn(
         self,

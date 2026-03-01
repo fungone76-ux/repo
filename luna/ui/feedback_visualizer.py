@@ -440,6 +440,10 @@ class FeedbackVisualizer:
             3000,
         )
     
+    def success(self, title: str, message: str = "") -> None:
+        """Show success feedback."""
+        self.show(FeedbackType.QUEST_COMPLETED, title, message, 3000)
+    
     def info(self, title: str, message: str = "") -> None:
         """Show info feedback."""
         self.show(FeedbackType.SYSTEM_INFO, title, message, 3000)

@@ -305,6 +305,13 @@ class StateUpdate(LunaBaseModel):
     # Fact for memory
     new_fact: Optional[str] = None
     
+    # Home invitation system
+    invite_accepted: bool = Field(default=False, description="True if NPC accepts player's invitation to come to their home")
+    
+    # Photo request (when player is at home and asks for photo)
+    photo_requested: bool = Field(default=False, description="True if player requested a photo from remote NPC")
+    photo_outfit: Optional[str] = Field(default=None, description="Outfit description for the requested photo")
+    
     @field_validator("affinity_change")
     @classmethod
     def clamp_affinity_change(cls, v: Dict[str, int]) -> Dict[str, int]:
@@ -471,10 +478,17 @@ class QuestDefinition(LunaBaseModel):
     character: Optional[str] = None  # Associated companion
     
     # Activation
-    activation_type: Literal["auto", "manual", "trigger"] = "auto"
+    activation_type: Literal["auto", "manual", "trigger", "choice"] = "auto"
     activation_conditions: List[QuestCondition] = Field(default_factory=list)
     trigger_event: Optional[str] = None
     hidden: bool = False
+    
+    # Player choice configuration
+    requires_player_choice: bool = False
+    choice_title: str = ""
+    choice_description: str = ""
+    accept_button_text: str = "Accetta"
+    decline_button_text: str = "Rifiuta"
     
     # Stages
     stages: Dict[str, QuestStage] = Field(default_factory=dict)
@@ -859,6 +873,9 @@ class CompanionDefinition(LunaBaseModel):
     physical_description: str = ""  # Physical appearance description
     default_outfit: str = "default"
     
+    # Visual tags for temporary NPCs (extracted from description, e.g., ["red hair", "chubby", "short hair"])
+    visual_tags: List[str] = Field(default_factory=list, description="Persistent visual traits for temporary NPCs")
+    
     # Outfit System V2: can be simple strings (legacy) or WardrobeDefinition objects
     wardrobe: Dict[str, Any] = Field(default_factory=dict)
     
@@ -1018,8 +1035,16 @@ class WorldDefinition(LunaBaseModel):
     # Daily events (routine, time-based)
     daily_events: Dict[str, Any] = Field(default_factory=dict)
     
+    # NPC templates (secondary characters with defined visual identity)
+    npc_templates: Dict[str, Any] = Field(default_factory=dict)
+    npc_fallback_female: Dict[str, str] = Field(default_factory=dict)
+    npc_fallback_male: Dict[str, str] = Field(default_factory=dict)
+    
     # Player character default stats
     player_character: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Story beats (affinity-based narrative milestones)
+    story_beats: Dict[str, Any] = Field(default_factory=dict)
 
 
 # =============================================================================

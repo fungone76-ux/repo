@@ -759,3 +759,19 @@ def get_db_manager(config: Optional[AppConfig] = None) -> DatabaseManager:
     if _db_manager is None:
         _db_manager = DatabaseManager(config)
     return _db_manager
+
+
+@asynccontextmanager
+async def get_db_session() -> AsyncIterator[AsyncSession]:
+    """Get database session for save/load operations.
+    
+    Usage:
+        async with get_db_session() as db:
+            await db.execute(...)
+    
+    Returns:
+        AsyncSession context manager
+    """
+    db_manager = get_db_manager()
+    async with db_manager.session() as db:
+        yield db

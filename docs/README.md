@@ -239,12 +239,30 @@ Il sistema rileva automaticamente quando descrivi NPC non-main character (es. se
 - **Indicatori**: secretary, librarian, redhead, etc. → NPC_BASE senza LoRA
 - **Coerenza**: Nessun mismatch visivo tra personaggi
 
-### Outfit Persistence
+### Outfit Persistence & Modifier
 
 Per garantire coerenza visiva tra turni:
 - Outfit description prelevata dal **Wardrobe YAML** (consistente)
 - Non più generata dall'LLM (causava cambi imprevedibili)
 - Cambio outfit solo su richiesta esplicita del player
+
+### Outfit Modifier System ⭐
+
+Sistema deterministico per modificare l'outfit basato sull'input del player:
+- **Riconosce pattern**: "tolto le scarpe", "scalza", "sbottonata", "downblouse"
+- **Major changes**: "si cambia", "abito da sera" → outfit completo nuovo
+- **UI Buttons**: "🔄 Cambia" (random) e "✏️ Modifica" (descrizione custom)
+- **Traduzione IT→EN**: Automatica per Stable Diffusion
+- **Persistenza**: Outfit modificato resta fino a nuovo cambio esplicito
+
+Esempio:
+```
+Player: "vedo che Luna si è tolta le scarpe"
+→ Immagine: Luna scalza (barefoot) + resto outfit teacher_suit
+
+Player: "Luna si mette un bikini rosso"
+→ Immagine: Solo bikini rosso (major change, ignora teacher_suit)
+```
 
 ## 🧪 Testing
 

@@ -23,6 +23,19 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Instructor availability check (lazy import to avoid circular imports)
+INSTRUCTOR_AVAILABLE = None  # None = not checked yet
+
+def _check_instructor():
+    global INSTRUCTOR_AVAILABLE
+    if INSTRUCTOR_AVAILABLE is None:
+        try:
+            from luna.ai.llm_instructor import get_instructor_client
+            INSTRUCTOR_AVAILABLE = True
+        except ImportError:
+            INSTRUCTOR_AVAILABLE = False
+    return INSTRUCTOR_AVAILABLE
+
 
 class LLMManager:
     """Manages LLM providers with automatic fallback.
@@ -173,6 +186,62 @@ class LLMManager:
         return await client.generate(
             system_prompt, user_input, history, json_mode
         )
+    
+    async def generate_structured(
+        self,
+        response_model: Type,
+        system_prompt: str,
+        user_input: str,
+        history: List[Dict[str, str]] = None,
+        provider: Optional[str] = None,
+    ):
+        """Generate with Instructor (structured Pydantic validation).
+        
+        Args:
+            response_model: Pydantic model class for validation
+            system_prompt: System instructions
+            user_input: User message
+            history: Previous messages
+            provider: "gemini" or "moonshot" (default: primary)
+            
+        Returns:
+            Validated instance of response_model
+            
+        Raises:
+            RuntimeError: If Instructor not available
+        """
+        if not _check_instructor():
+            raise RuntimeError("Instructor not installed. Run: uv pip install instructor")
+        
+        # Import here to avoid circular imports
+        from luna.ai.llm_instructor import get_instructor_client
+        
+        # Determine provider
+        if provider is None:
+            if self._primary and isinstance(self._primary, GeminiClient):
+                provider = "gemini"
+            else:
+                provider = "openai"  # Moonshot uses OpenAI interface
+        
+        # Get instructor client
+        model = None
+        if provider == "gemini":
+            model = "gemini-2.0-flash"
+        elif provider == "openai":
+            model = "kimi-k2.5"  # Moonshot
+        
+        client = get_instructor_client(provider=provider, model=model)
+        
+        print(f"[LLMManager] Using Instructor with {provider}/{model}")
+        
+        result = await client.generate(
+            response_model=response_model,
+            system_prompt=system_prompt,
+            user_input=user_input,
+            history=history,
+        )
+        
+        return result
     
     def _is_valid_response(self, response: LLMResponse) -> bool:
         """Check if response is valid (not error).

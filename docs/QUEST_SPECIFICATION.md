@@ -1,8 +1,28 @@
 # SPECIFICA FORMALE: Quest System - Trasmissione LLM
 
-**Versione:** 1.0  
-**Data:** 2026-02-21  
+**Versione:** 1.1  
+**Data:** 2026-02-28  
 **Stato:** Standard per tutti i world Luna RPG v4
+
+> 📚 **Documentazione correlata:**
+> - [Quest Choice System](QUEST_CHOICE_SYSTEM.md) - Sistema scelte multiple UI-based (NUOVO)
+> - [Quest Implementation Summary](QUEST_IMPLEMENTATION_SUMMARY.md) - Riepilogo implementazione
+
+---
+
+## 🆕 NOVITÀ: Tipo Attivazione "choice"
+
+Oltre ai tipi `auto`, `manual`, `trigger`, è ora disponibile **`activation_type: "choice"`**:
+
+```yaml
+activation:
+  type: "choice"
+  requires_player_choice: true
+  choice_title: "Proposta Speciale"
+  choice_description: "Luna ti guarda... 'Vuoi che ti aiuti?'"
+```
+
+Vedere [Quest Choice System](QUEST_CHOICE_SYSTEM.md) per dettagli completi.
 
 ---
 

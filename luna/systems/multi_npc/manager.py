@@ -42,7 +42,8 @@ class MultiNPCManager:
     """
     
     # Minimum affinity player must have with secondary NPC for them to intervene
-    MIN_PLAYER_AFFINITY = 20
+    # V3.1: Lowered from 20 to 5 to make multi-NPC interactions more frequent
+    MIN_PLAYER_AFFINITY = 5
     
     # Cooldown: NPC can't intervene again for this many turns after intervening
     INTERVENTION_COOLDOWN = 3
