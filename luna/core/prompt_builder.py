@@ -40,6 +40,7 @@ class PromptBuilder:
         multi_npc_context: str = "",
         switched_from: Optional[str] = None,
         is_temporary: bool = False,
+        forced_poses: Optional[str] = None,
     ) -> str:
         """Build complete system prompt.
         
@@ -54,6 +55,7 @@ class PromptBuilder:
             event_manager: For active global events context
             switched_from: Previous companion name if just switched
             is_temporary: True if current companion is temporary NPC
+            forced_poses: Optional forced physical poses from player input
             
         Returns:
             Complete system prompt
@@ -410,6 +412,27 @@ class PromptBuilder:
         if visual_enforcement:
             sections.extend([
                 visual_enforcement,
+                "",
+            ])
+        
+        # Forced Poses from Player Input (e.g., "Luna accavalla le gambe")
+        if forced_poses:
+            sections.extend([
+                "=== 🎭 FORCED POSES (PLAYER REQUESTED - MANDATORY) ===",
+                "",
+                f"The player has EXPLICITLY REQUESTED these physical poses:",
+                f"  MANDATORY POSES: {forced_poses}",
+                "",
+                "CRITICAL RULES:",
+                "1. These poses MUST be included in visual_en",
+                "2. The character MUST adopt these poses in the scene",
+                "3. These poses take PRECEDENCE over default character behavior",
+                "4. DO NOT ignore these poses - they are player commands",
+                "",
+                "Example:",
+                f'  Player: "*{{character}} accavalla le gambe*"',
+                f'  WRONG: visual_en: "...standing with arms crossed..." (ignored request!)',
+                f'  RIGHT: visual_en: "...sitting with crossed legs, hands on thighs..." (pose included!)',
                 "",
             ])
         

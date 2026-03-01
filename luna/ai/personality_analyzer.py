@@ -2,14 +2,22 @@
 
 Uses the LLM to analyze player behavior patterns from conversation history.
 More accurate than regex, understands context and nuance.
+
+V3.5: Added StrictValidator with retry logic for robust JSON validation.
 """
 from __future__ import annotations
 
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from luna.core.models import BehaviorType, TraitIntensity
+from luna.core.models import (
+    BehaviorType, 
+    TraitIntensity, 
+    PersonalityAnalysisResponse,
+    DetectedTrait,
+)
 from luna.ai.manager import get_llm_manager
+from luna.ai.guardrails import StrictValidator, GuardrailsValidationError
 
 
 class PersonalityAnalyzer:
@@ -17,6 +25,11 @@ class PersonalityAnalyzer:
     
     Analyzes conversation history to detect behavioral patterns.
     Runs periodically (every N turns) for efficiency.
+    
+    Features:
+    - Strict JSON validation with Pydantic models
+    - Automatic retry with error feedback to LLM
+    - Graceful degradation on failure
     """
     
     # Behavior types the LLM can detect
@@ -58,6 +71,8 @@ class PersonalityAnalyzer:
     ) -> Dict[str, Any]:
         """Analyze player behavior from conversation history.
         
+        Uses StrictValidator with retry logic for robust parsing.
+        
         Args:
             companion_name: Name of current companion
             history: Recent conversation history
@@ -75,26 +90,118 @@ class PersonalityAnalyzer:
         
         # Build analysis prompt
         system_prompt = self._build_system_prompt(companion_name, current_affinity)
-        
-        # Format history for analysis
         history_text = self._format_history(history)
         
-        try:
-            # Call LLM for analysis
-            response = await self._llm_manager.generate(
-                system_prompt=system_prompt,
-                user_input=history_text,
-                history=[],
-                json_mode=True,
-                use_mock=False,  # Force real analysis
-            )
+        # === RETRY LOGIC WITH STRICT VALIDATION ===
+        max_retries = 2
+        current_retry = 0
+        current_prompt = system_prompt
+        last_error = None
+
+        while current_retry <= max_retries:
+            try:
+                # 1. Generate response
+                response = await self._llm_manager.generate(
+                    system_prompt=current_prompt,
+                    user_input=history_text,
+                    history=[],
+                    json_mode=True,
+                    use_mock=False,
+                )
+                
+                # 2. Parse JSON
+                try:
+                    data = json.loads(response.text)
+                except json.JSONDecodeError as e:
+                    raise GuardrailsValidationError(
+                        message=f"JSON non valido: {e}",
+                        errors=[{"type": "json", "msg": str(e)}],
+                        suggestion="Assicurati che il JSON sia ben formato senza markdown."
+                    )
+
+                # 3. Strict validation (extra='forbid', strict=True)
+                validated = StrictValidator.validate_strict(
+                    data, 
+                    PersonalityAnalysisResponse
+                )
+                
+                # 4. Convert to internal format
+                return self._convert_to_internal_format(validated.model_dump())
+
+            except GuardrailsValidationError as guard_err:
+                print(f"[PersonalityAnalyzer] Validation failed (try {current_retry + 1}/{max_retries + 1}): {guard_err.suggestion}")
+                last_error = guard_err
+                
+                if current_retry < max_retries:
+                    # Build retry prompt with error feedback
+                    retry_instruction = (
+                        f"\n\n=== ERRORE NEL JSON PRECEDENTE ===\n"
+                        f"{guard_err.message}\n"
+                        f"SUGGERIMENTO: {guard_err.suggestion}\n"
+                        f"Genera nuovamente il JSON correggendo l'errore."
+                    )
+                    current_prompt += retry_instruction
+                
+                current_retry += 1
             
-            # Parse result
-            return self._parse_analysis_response(response.text)
+            except Exception as e:
+                print(f"[PersonalityAnalyzer] Unexpected error: {e}")
+                break
+        
+        # Fallimento dopo i retry
+        print(f"[PersonalityAnalyzer] Failed after {max_retries} retries. Returning empty result.")
+        return {"traits": [], "impression_changes": {}, "error": str(last_error) if last_error else "Unknown error"}
+    
+    def _convert_to_internal_format(self, validated: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert validated Pydantic model to internal format.
+        
+        Args:
+            validated: Validated PersonalityAnalysisResponse dict
             
-        except Exception as e:
-            print(f"[PersonalityAnalyzer] Analysis failed: {e}")
-            return {"traits": [], "impression_changes": {}, "error": str(e)}
+        Returns:
+            Internal format with BehaviorType and TraitIntensity
+        """
+        result = {
+            "traits": [],
+            "impression_changes": {},
+            "archetype_hint": validated.get("archetype_hint"),
+            "reasoning": validated.get("reasoning", ""),
+        }
+        
+        # Convert traits
+        for trait_data in validated.get("traits", []):
+            trait_name = trait_data.get("trait", "").lower()
+            confidence = float(trait_data.get("confidence", 0))
+            evidence = trait_data.get("evidence", "")
+            
+            # Map to BehaviorType
+            try:
+                behavior_type = BehaviorType(trait_name)
+                # Convert confidence to intensity
+                if confidence >= 0.7:
+                    intensity = TraitIntensity.STRONG
+                elif confidence >= 0.5:
+                    intensity = TraitIntensity.MODERATE
+                else:
+                    intensity = TraitIntensity.SUBTLE
+                
+                result["traits"].append({
+                    "type": behavior_type,
+                    "intensity": intensity,
+                    "confidence": confidence,
+                    "evidence": evidence,
+                })
+            except ValueError:
+                # Unknown trait, skip
+                continue
+        
+        # Parse impression changes
+        changes = validated.get("impression_changes", {})
+        for dim in self.IMPRESSION_DIMENSIONS:
+            if dim in changes:
+                result["impression_changes"][dim] = int(changes[dim])
+        
+        return result
     
     def should_analyze(self, turn_count: int) -> bool:
         """Check if analysis should run this turn.
@@ -167,7 +274,9 @@ Respond with valid JSON:
 3. Evidence must quote specific text
 4. Impression changes range -10 to +10
 5. Archetype_hint: optional summary descriptor
-6. Be objective - analyze what IS present, not what might be"""
+6. reasoning: optional explanation
+7. Be objective - analyze what IS present, not what might be
+8. Respond ONLY with JSON, no markdown formatting"""
 
     def _format_history(self, history: List[Dict[str, str]]) -> str:
         """Format conversation history for analysis.
@@ -193,64 +302,6 @@ Respond with valid JSON:
         lines.append("=== ANALYZE PLAYER'S BEHAVIOR ABOVE ===")
         
         return "\n".join(lines)
-    
-    def _parse_analysis_response(self, text: str) -> Dict[str, Any]:
-        """Parse LLM analysis response.
-        
-        Args:
-            text: Raw JSON response
-            
-        Returns:
-            Parsed analysis
-        """
-        try:
-            data = json.loads(text)
-            
-            result = {
-                "traits": [],
-                "impression_changes": {},
-                "archetype_hint": data.get("archetype_hint"),
-                "reasoning": data.get("reasoning", ""),
-            }
-            
-            # Parse traits
-            for trait_data in data.get("traits", []):
-                trait_name = trait_data.get("trait", "").lower()
-                confidence = float(trait_data.get("confidence", 0))
-                evidence = trait_data.get("evidence", "")
-                
-                # Map to BehaviorType
-                try:
-                    behavior_type = BehaviorType(trait_name)
-                    # Convert confidence to intensity
-                    if confidence >= 0.7:
-                        intensity = TraitIntensity.STRONG
-                    elif confidence >= 0.5:
-                        intensity = TraitIntensity.MODERATE
-                    else:
-                        intensity = TraitIntensity.SUBTLE
-                    
-                    result["traits"].append({
-                        "type": behavior_type,
-                        "intensity": intensity,
-                        "confidence": confidence,
-                        "evidence": evidence,
-                    })
-                except ValueError:
-                    # Unknown trait, skip
-                    continue
-            
-            # Parse impression changes
-            changes = data.get("impression_changes", {})
-            for dim in self.IMPRESSION_DIMENSIONS:
-                if dim in changes:
-                    result["impression_changes"][dim] = int(changes[dim])
-            
-            return result
-            
-        except json.JSONDecodeError:
-            print(f"[PersonalityAnalyzer] Failed to parse response: {text[:200]}")
-            return {"traits": [], "impression_changes": {}}
     
     async def quick_impression_update(
         self,

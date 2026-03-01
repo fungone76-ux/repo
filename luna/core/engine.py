@@ -36,6 +36,7 @@ from luna.media.pipeline import MediaResult
 from luna.systems.personality import BehavioralUpdate, PersonalityEngine
 from luna.systems.memory import MemoryManager
 from luna.systems.location import LocationManager
+from luna.systems.pose_extractor import get_pose_extractor, PoseExtractor
 from luna.systems.global_events import GlobalEventManager, GlobalEventInstance
 from luna.systems.multi_npc import MultiNPCManager
 from luna.systems.affinity_calculator import get_calculator
@@ -138,6 +139,9 @@ class GameEngine:
         # Outfit modifier (deterministic clothing changes)
         from luna.systems.outfit_modifier import create_outfit_modifier
         self.outfit_modifier = create_outfit_modifier()
+        
+        # Pose extractor (deterministic pose detection)
+        self.pose_extractor = get_pose_extractor()
         self.story_director = StoryDirector(self.world.narrative_arc)
         self.location_manager: Optional[LocationManager] = None
         self.gameplay_manager: Optional[GameplayManager] = None
@@ -708,6 +712,13 @@ class GameEngine:
                 npc_personalities
             )
         
+        # Extract forced poses from user input (e.g., "Luna accavalla le gambe")
+        forced_poses = None
+        if self.pose_extractor.has_explicit_pose(user_input):
+            forced_poses = self.pose_extractor.get_forced_visual_description(user_input)
+            if forced_poses:
+                print(f"[GameEngine] Forced poses detected: {forced_poses}")
+        
         system_prompt = self.prompt_builder.build_system_prompt(
             game_state=game_state,
             personality_engine=self.personality_engine,
@@ -719,6 +730,7 @@ class GameEngine:
             multi_npc_context=multi_npc_context,
             switched_from=old_companion if switched_companion else None,
             is_temporary=is_temporary,
+            forced_poses=forced_poses,
         )
         
         # -------------------------------------------------------------------
@@ -1479,7 +1491,7 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
                 # Get text after the match
                 start_pos = match.end()
                 remaining = input_lower[start_pos:].strip()
-                words = remaining.split()[:5]  # Check first 5 words max
+                words = remaining.split()[:10]  # Check first 10 words (was 5) for better detection
 
                 target = None
                 target_idx = -1
@@ -1491,6 +1503,14 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
                         target = word_clean
                         target_idx = idx
                         break
+                    
+                    # V3.2: Also check for multi-word phrases (e.g., "giovane donna")
+                    if idx < len(words) - 1:
+                        two_word = f"{word_clean} {words[idx+1].strip('.,;:''!?()[]{}').lower()}"
+                        if two_word in self.NPC_TRANSLATIONS:
+                            target = two_word
+                            target_idx = idx
+                            break
                 
                 if not target:
                     continue
@@ -1535,10 +1555,17 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
     
     # Translation mapping for common Italian -> English terms
     NPC_TRANSLATIONS = {
-        # People
+        # People - core terms
         'donna': 'woman', 'ragazza': 'girl', 'signora': 'lady', 'femmina': 'female',
         'uomo': 'man', 'ragazzo': 'boy', 'signore': 'gentleman', 'maschio': 'male',
         'persona': 'person',
+        
+        # People - synonyms/variants (expanded for better detection)
+        'fanciulla': 'girl', 'giovane': 'young person', 'giovane donna': 'young woman',
+        'tizia': 'chick', 'tipa': 'girl', 'creatura': 'person',
+        'signorina': 'miss', 'madama': 'lady', 'matrona': 'matron',
+        'individuo': 'individual', 'figura': 'figure', 'soggetto': 'subject',
+        'bellezza': 'beauty', 'bella': 'beautiful woman', 'brutta': 'ugly woman',
         
         # Fantasy
         'amazzona': 'amazon warrior', 'guerriera': 'warrior woman', 'guerriero': 'warrior',
@@ -2279,6 +2306,180 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
         
         game_state = self.state_manager.current
         return self.gameplay_manager.execute_action(action_id, game_state, target)
+    
+    async def generate_intro(self) -> TurnResult:
+        """Generate opening introduction with character image.
+        
+        Creates the initial scene when the game starts:
+        - Narrative introduction text
+        - Character portrait image
+        
+        Returns:
+            Turn result with intro text and image path
+        """
+        if not self._initialized:
+            await self.initialize()
+        
+        game_state = self.state_manager.current
+        companion = self.world.companions.get(game_state.active_companion)
+        
+        # Build intro-specific system prompt
+        system_prompt = self._build_intro_prompt(game_state, companion)
+        
+        # Generate intro via LLM
+        try:
+            llm_response = await self.llm_manager.generate(
+                system_prompt=system_prompt,
+                user_input="Generate the opening scene introduction.",
+                history=[],
+                json_mode=True,
+            )
+            
+            # Save to memory
+            if self.memory_manager:
+                await self.memory_manager.add_message(
+                    role="assistant",
+                    content=llm_response.text,
+                    turn_number=0,
+                    visual_en=llm_response.visual_en,
+                    tags_en=llm_response.tags_en,
+                )
+            
+        except Exception as e:
+            print(f"[GameEngine] Intro generation failed: {e}")
+            # Fallback intro
+            llm_response = LLMResponse(
+                text=f"Sei arrivato in {game_state.current_location}. {game_state.active_companion} ti aspetta.",
+                visual_en=f"{game_state.active_companion} standing, welcoming expression, {game_state.current_location} background",
+                tags_en=["1girl", "solo", "standing", "smile"],
+            )
+        
+        # Generate image
+        outfit = game_state.get_outfit()
+        
+        # Get base prompt for active companion (SACRED for visual consistency)
+        active_companion_def = self.world.companions.get(game_state.active_companion)
+        base_prompt = active_companion_def.base_prompt if active_companion_def else None
+        
+        media_result = await self.media_pipeline.generate_all(
+            text=llm_response.text,
+            visual_en=llm_response.visual_en,
+            tags=llm_response.tags_en,
+            companion_name=game_state.active_companion,
+            outfit=outfit,
+            base_prompt=base_prompt,  # SACRED: Use companion's base prompt from world YAML
+            secondary_characters=None,  # Intro is always single character
+        )
+        
+        # Get available actions for intro
+        available_actions = []
+        if self.gameplay_manager:
+            actions = self.gameplay_manager.get_available_actions(game_state)
+            available_actions = [a.to_dict() for a in actions]
+        
+        return TurnResult(
+            text=llm_response.text,
+            image_path=media_result.image_path,
+            audio_path=media_result.audio_path,
+            turn_number=0,
+            provider_used=getattr(llm_response, 'provider', 'unknown'),
+            available_actions=available_actions,
+        )
+    
+    def _build_intro_prompt(
+        self,
+        game_state: GameState,
+        companion: Optional[Any],
+    ) -> str:
+        """Build system prompt for intro generation.
+        
+        Args:
+            game_state: Current game state
+            companion: Active companion definition
+            
+        Returns:
+            System prompt for intro
+        """
+        sections = [
+            "=== LUNA RPG - OPENING SCENE ===",
+            "",
+            f"Genre: {self.world.genre}",
+            f"World: {self.world.name}",
+            "",
+            "You are writing the OPENING SCENE of a visual novel.",
+            "This is the first moment the player sees - make it captivating!",
+            "",
+            "=== SETTING ===",
+            self.world.lore or self.world.description,
+            "",
+            "=== MAIN CHARACTER ===",
+        ]
+        
+        if companion:
+            # Use physical_description if available, fallback to base_prompt
+            appearance = companion.physical_description or companion.base_prompt
+            sections.extend([
+                f"Name: {companion.name}",
+                f"Role: {companion.role}",
+                f"Age: {companion.age}",
+                f"Personality: {companion.base_personality}",
+                f"Appearance: {appearance}",
+            ])
+            if companion.wardrobe:
+                default_outfit = list(companion.wardrobe.keys())[0]
+                sections.append(f"Current Outfit: {default_outfit}")
+        
+        # Handle both enum and string time_of_day
+        time_str = game_state.time_of_day.value if hasattr(game_state.time_of_day, 'value') else str(game_state.time_of_day)
+        sections.extend([
+            "",
+            f"=== STARTING LOCATION ===",
+            f"Location: {game_state.current_location}",
+            f"Time: {time_str}",
+            "",
+            "=== YOUR TASK ===",
+            "Write an engaging OPENING SCENE where the player FIRST ENCOUNTERS the main character.",
+            "",
+            "CRITICAL - FIRST MEETING RULES:",
+            "1. This is the VERY FIRST TIME the characters meet",
+            "2. The NPC does NOT know the player's name yet",
+            "3. The NPC must NOT use the player's name in dialogue",
+            "4. The NPC should address the player formally or with generic terms ('you', 'new student', 'stranger')",
+            "5. Include a moment of introduction where names would naturally be exchanged",
+            "",
+            "Set the mood, describe the atmosphere, introduce the character naturally.",
+            "",
+            "=== VISUAL GENERATION (CRITICAL) ===",
+            "The visual_en MUST include the character's BASE PROMPT for image generation:",
+            "",
+            f"BASE PROMPT for {companion.name if companion else 'character'}:",
+            companion.base_prompt if companion else "1girl, solo, detailed",
+            "",
+            "INSTRUCTIONS:",
+            "1. visual_en MUST start with the BASE PROMPT above (contains LoRAs and core features)",
+            "2. Add pose, expression, clothing, lighting details AFTER the base prompt",
+            "3. NEVER omit the base prompt - it defines the character's visual identity!",
+            "",
+            "=== OUTPUT FORMAT ===",
+            "Respond with valid JSON:",
+            "{",
+            '  "text": "Opening narrative in Italian (2-3 paragraphs, immersive, set the scene)",',
+            '  "visual_en": "BASE_PROMPT_HERE, pose, expression, clothing, lighting, background",',
+            '  "tags_en": ["score_9", "score_8_up", "1girl", "solo", "portrait", ...],',
+            '  "composition": "medium_shot"',
+            "}",
+            "",
+            "=== RULES ===",
+            "1. Introduce the character and setting naturally",
+            "2. Use atmospheric, sensory details",
+            "3. visual_en should focus on the character's appearance and expression",
+            "4. This is the FIRST impression - make it memorable!",
+            "",
+            "=== END INSTRUCTIONS ===",
+        ])
+        
+        return "\n".join(sections)
+    
     # ===================================================================
     # Outfit Change Image Generation
     # ===================================================================
@@ -2330,6 +2531,16 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
             print(f"[GameEngine] Failed to generate outfit change image: {e}")
         
         return None
+    
+    def toggle_audio(self) -> bool:
+        """Toggle audio on/off.
+        
+        Returns:
+            New audio state (True = enabled)
+        """
+        if self.media_pipeline:
+            return self.media_pipeline.toggle_audio()
+        return False
     
     def _create_fallback_response(self, guard_err) -> LLMResponse:
         """Create a fallback response when guardrails validation fails.

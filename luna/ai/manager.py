@@ -210,38 +210,111 @@ class LLMManager:
         Raises:
             RuntimeError: If Instructor not available
         """
+        # Check if instructor is available
         if not _check_instructor():
-            raise RuntimeError("Instructor not installed. Run: uv pip install instructor")
+            print("[LLMManager] WARNING: Instructor not available, using JSON fallback")
+            # Fallback: generate JSON and parse manually
+            return await self._generate_structured_fallback(
+                response_model, system_prompt, user_input, history, provider
+            )
         
-        # Import here to avoid circular imports
-        from luna.ai.llm_instructor import get_instructor_client
+        try:
+            # Import here to avoid circular imports
+            from luna.ai.llm_instructor import get_instructor_client
+            
+            # Determine provider
+            if provider is None:
+                if self._primary and isinstance(self._primary, GeminiClient):
+                    provider = "gemini"
+                else:
+                    provider = "openai"  # Moonshot uses OpenAI interface
+            
+            # Get instructor client
+            model = None
+            if provider == "gemini":
+                model = "gemini-2.0-flash"
+            elif provider == "openai":
+                model = "kimi-k2.5"  # Moonshot
+            
+            client = get_instructor_client(provider=provider, model=model)
+            
+            print(f"[LLMManager] Using Instructor with {provider}/{model}")
+            
+            result = await client.generate(
+                response_model=response_model,
+                system_prompt=system_prompt,
+                user_input=user_input,
+                history=history,
+            )
+            
+            return result
+            
+        except Exception as e:
+            print(f"[LLMManager] Instructor failed: {e}, using JSON fallback")
+            return await self._generate_structured_fallback(
+                response_model, system_prompt, user_input, history, provider
+            )
+    
+    async def _generate_structured_fallback(
+        self,
+        response_model: Type,
+        system_prompt: str,
+        user_input: str,
+        history: List[Dict[str, str]] = None,
+        provider: Optional[str] = None,
+    ):
+        """Fallback for structured generation without Instructor.
         
-        # Determine provider
-        if provider is None:
-            if self._primary and isinstance(self._primary, GeminiClient):
-                provider = "gemini"
-            else:
-                provider = "openai"  # Moonshot uses OpenAI interface
+        Uses JSON mode and manual Pydantic validation.
+        """
+        import json
         
-        # Get instructor client
-        model = None
-        if provider == "gemini":
-            model = "gemini-2.0-flash"
-        elif provider == "openai":
-            model = "kimi-k2.5"  # Moonshot
+        # Enhance system prompt with JSON schema hint
+        schema = response_model.model_json_schema() if hasattr(response_model, 'model_json_schema') else {}
+        enhanced_prompt = f"""{system_prompt}
+
+CRITICAL: Respond with valid JSON matching this structure:
+{json.dumps(schema, indent=2) if schema else 'Follow the specified format exactly.'}
+
+Respond ONLY with JSON, no markdown formatting."""
         
-        client = get_instructor_client(provider=provider, model=model)
-        
-        print(f"[LLMManager] Using Instructor with {provider}/{model}")
-        
-        result = await client.generate(
-            response_model=response_model,
-            system_prompt=system_prompt,
+        # Generate with JSON mode
+        response = await self.generate(
+            system_prompt=enhanced_prompt,
             user_input=user_input,
             history=history,
+            json_mode=True,
+            provider=provider,
         )
         
-        return result
+        # Parse and validate
+        try:
+            # Extract JSON from response
+            text = response.text.strip()
+            
+            # Handle markdown code blocks
+            if text.startswith('```json'):
+                text = text[7:]
+            elif text.startswith('```'):
+                text = text[3:]
+            if text.endswith('```'):
+                text = text[:-3]
+            text = text.strip()
+            
+            # Parse JSON
+            data = json.loads(text)
+            
+            # Validate with Pydantic model
+            return response_model(**data)
+            
+        except json.JSONDecodeError as e:
+            print(f"[LLMManager] JSON parse failed: {e}")
+            # Return default instance
+            return response_model()
+        except Exception as e:
+            print(f"[LLMManager] Validation failed: {e}")
+            # Return default instance
+            return response_model()
     
     def _is_valid_response(self, response: LLMResponse) -> bool:
         """Check if response is valid (not error).

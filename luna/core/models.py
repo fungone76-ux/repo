@@ -1243,3 +1243,48 @@ class BeatExecution(LunaBaseModel):
         default="",
         description="The LLM text that fulfilled this beat"
     )
+
+
+
+# =============================================================================
+# Personality Analysis Models (for Guardrails validation)
+# =============================================================================
+
+class DetectedTrait(BaseModel):
+    """Single detected behavioral trait from conversation analysis."""
+    
+    trait: str = Field(
+        ...,
+        description="Tipo di comportamento (es. aggressive, romantic, shy)"
+    )
+    confidence: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Punteggio confidenza 0.0-1.0"
+    )
+    evidence: str = Field(
+        ...,
+        description="Frase o azione specifica che giustifica il tratto"
+    )
+
+
+class PersonalityAnalysisResponse(BaseModel):
+    """Structured response from LLM personality analysis."""
+    
+    traits: List[DetectedTrait] = Field(
+        ...,
+        description="Lista dei tratti comportamentali rilevati"
+    )
+    impression_changes: Dict[str, int] = Field(
+        ...,
+        description="Mappa dimensione -> valore (-10 a +10)"
+    )
+    archetype_hint: Optional[str] = Field(
+        None,
+        description="Suggerimento per l'archetipo del giocatore"
+    )
+    reasoning: Optional[str] = Field(
+        None,
+        description="Spiegazione del ragionamento dell'analisi"
+    )

@@ -600,20 +600,20 @@ class MainWindow(QMainWindow):
         game_state = self.engine.get_game_state()
         active_companion = game_state.active_companion
         
-        # Get all quest states
-        all_states = list(self.engine.quest_engine.get_all_states())
-        print(f"[QuestTracker] Active: {active_companion}, Total quest states: {len(all_states)}")
+        # Get active quest states (for status tracking)
+        active_states = {s.quest_id: s for s in self.engine.quest_engine.get_all_states()}
+        
+        # Iterate over ALL quest definitions (not just active ones)
+        # This shows available quests too!
+        all_quest_defs = self.engine.world.quests
+        print(f"[QuestTracker] Active: {active_companion}, Total quest defs: {len(all_quest_defs)}, Active states: {len(active_states)}")
         
         quests = []
-        for quest_state in all_states:
-            quest_def = self.engine.world.quests.get(quest_state.quest_id)
-            if not quest_def:
-                continue
-            
+        for quest_id, quest_def in all_quest_defs.items():
             # Filter by active companion
             quest_character = getattr(quest_def, 'character', '')
             if quest_character and quest_character != active_companion:
-                print(f"[QuestTracker] Skipping {quest_state.quest_id} (character: {quest_character} != {active_companion})")
+                print(f"[QuestTracker] Skipping {quest_id} (character: {quest_character} != {active_companion})")
                 continue  # Skip quests for other companions
             
             # Get requirements from activation conditions
@@ -623,30 +623,43 @@ class MainWindow(QMainWindow):
                     if cond.type == 'affinity':
                         requirements['affinity'] = cond.value
             
+            # Get state if exists
+            quest_state = active_states.get(quest_id)
+            
             # Determine status
-            if quest_state.status == QuestStatus.ACTIVE:
-                current_stage = quest_def.stages.get(quest_state.current_stage_id or "")
-                stage_desc = current_stage.description if current_stage else ""
-                
-                quests.append({
-                    'quest_id': quest_state.quest_id,
-                    'title': quest_def.title,
-                    'description': stage_desc or quest_def.description,
-                    'status': 'active',
-                    'requirements': requirements,
-                })
-            elif quest_state.status == QuestStatus.COMPLETED:
-                quests.append({
-                    'quest_id': quest_state.quest_id,
-                    'title': quest_def.title,
-                    'description': quest_def.description,
-                    'status': 'completed',
-                    'requirements': {},
-                })
+            if quest_state:
+                if quest_state.status == QuestStatus.ACTIVE:
+                    current_stage = quest_def.stages.get(quest_state.current_stage_id or "")
+                    stage_desc = current_stage.description if current_stage else ""
+                    
+                    quests.append({
+                        'quest_id': quest_id,
+                        'title': quest_def.title,
+                        'description': stage_desc or quest_def.description,
+                        'status': 'active',
+                        'requirements': requirements,
+                    })
+                elif quest_state.status == QuestStatus.COMPLETED:
+                    quests.append({
+                        'quest_id': quest_id,
+                        'title': quest_def.title,
+                        'description': quest_def.description,
+                        'status': 'completed',
+                        'requirements': {},
+                    })
+                else:
+                    # Has state but not active/completed (rare)
+                    quests.append({
+                        'quest_id': quest_id,
+                        'title': quest_def.title,
+                        'description': quest_def.description,
+                        'status': 'available',
+                        'requirements': requirements,
+                    })
             else:
-                # Available but not started
+                # No state = available to activate
                 quests.append({
-                    'quest_id': quest_state.quest_id,
+                    'quest_id': quest_id,
                     'title': quest_def.title,
                     'description': quest_def.description,
                     'status': 'available',

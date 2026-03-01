@@ -515,20 +515,27 @@ class SingleCharacterBuilder(BasePromptBuilder):
         context_parts = []
         outfit_negative = ""
         
-        # V3 PATTERN: Add outfit description
-        # outfit.description contains either:
-        # 1. Wardrobe description (if style is a key in wardrobe) - CONSISTENT
-        # 2. Creative description (if style not in wardrobe) - CREATIVE FALLBACK
-        if outfit and outfit.description:
+        # V3.5 PATTERN: Use OutfitPromptMapper for component-based outfit generation
+        # This ensures clean prompts and proper negative keywords (e.g., barefoot -> no shoes)
+        if outfit and outfit.components:
+            # Use OutfitPromptMapper for structured component-based prompts
+            outfit_pos, outfit_neg = OutfitPromptMapper.map_outfit(outfit)
+            if outfit_pos:
+                context_parts.append(f"({outfit_pos}:1.3),")
+                print(f"    [DEBUG Outfit] Using mapped: '{outfit_pos[:60]}...'")
+            if outfit_neg:
+                outfit_negative = outfit_neg
+                print(f"    [DEBUG Outfit] Negative: '{outfit_neg[:60]}...'")
+        elif outfit and outfit.description:
+            # Fallback to description-based (wardrobe or creative)
             clean_desc = outfit.description.strip()
-            # Format for SD: add weight and "wearing" prefix if not present
             if clean_desc.lower().startswith("wearing "):
                 context_parts.append(f"({clean_desc}:1.3),")
             elif "nude" in clean_desc.lower() or "naked" in clean_desc.lower():
                 context_parts.append(f"(nude:1.3), {clean_desc},")
             else:
                 context_parts.append(f"(wearing {clean_desc}:1.3),")
-            print(f"    [DEBUG Outfit] Using: '{clean_desc[:60]}...'")
+            print(f"    [DEBUG Outfit] Using description: '{clean_desc[:60]}...'")
         elif outfit_description:
             # Legacy fallback
             clean_desc = outfit_description.strip()
