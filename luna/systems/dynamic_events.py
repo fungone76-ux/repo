@@ -679,6 +679,14 @@ class DynamicEventManager:
         game_state: GameState,
     ) -> None:
         """Apply effects from choice."""
+        # FIX: Handle case where effect is not a dict
+        if not effect_dict:
+            return
+        if isinstance(effect_dict, str):
+            # If effect is a string, treat it as a narrative effect (no mechanical effect)
+            print(f"[DynamicEvent] Effect is string, not dict: {effect_dict}")
+            return
+        
         for key, value in effect_dict.items():
             if key == 'affinity_all':
                 for companion in game_state.affinity:

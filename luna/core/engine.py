@@ -1471,6 +1471,27 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
             if not getattr(companion, 'is_temporary', False):
                 for alias in getattr(companion, 'aliases', []):
                     known_companions.add(alias.lower())
+                # V3.3: Add role/occupation to prevent false NPC detection
+                # e.g., Luna's role is "teacher", don't create NPC "Professoressa"
+                role = getattr(companion, 'role', '').lower()
+                if role:
+                    known_companions.add(role)
+                    # Also add Italian translations of common roles
+                    role_translations = {
+                        'teacher': ['professoressa', 'professore', 'insegnante'],
+                        'student': ['studentessa', 'studente'],
+                        'secretary': ['segretaria'],
+                        'nurse': ['infermiera'],
+                        'principal': ['preside'],
+                        'janitor': ['bidella', 'bidello'],
+                        'librarian': ['bibliotecaria'],
+                        'bartender': ['barista'],
+                        'waitress': ['cameriera'],
+                    }
+                    for eng, ita_list in role_translations.items():
+                        if role == eng or role in ita_list:
+                            for ita in ita_list:
+                                known_companions.add(ita)
         
         # V3 STYLE: Find noun after interaction verbs
         # Match verb+prep, then manually extract next non-article word

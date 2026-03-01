@@ -3,14 +3,16 @@
 
 gemini:
   # Primary model - used for all requests
-  primary: "gemini-3-pro-preview"
+  primary: "gemini-3.1-pro-preview"
   
   # Fallback models - tried in order if primary fails
   # Must be valid model names from Google AI API
   fallbacks:
-    - "gemini-2.0-flash"          # Fast fallback
-    - "gemini-1.5-pro"            # Stable Pro model
-    - "gemini-1.5-flash"          # Fast fallback
+    - "gemini-3-pro-preview"        # Latest v3 Pro
+    - "gemini-2.5-pro"              # Stable 2.5 Pro
+    - "gemini-2.5-flash"            # Fast 2.5
+    - "gemini-2.0-flash"            # Fast 2.0 fallback
+    - "gemini-1.5-pro"              # Legacy Pro
   
   # Settings
   temperature: 0.95

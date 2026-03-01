@@ -241,9 +241,11 @@ class ComfyUIClient:
         print(f"  3. {workflow.get('24', {}).get('inputs', {}).get('lora_name', '?')} "
               f"(strength: {workflow.get('24', {}).get('inputs', {}).get('strength_model', '?')})")
         
-        print(f"\n--- Positive Prompt ---")
-        print(workflow.get("2", {}).get("inputs", {}).get("text", "")[:500])
-        print(f"\n{'='*60}\n")
+        print(f"\n--- Positive Prompt (FULL) ---")
+        positive_text = workflow.get("2", {}).get("inputs", {}).get("text", "")
+        print(positive_text)
+        print(f"\n[Prompt length: {len(positive_text)} chars]")
+        print(f"{'='*60}\n")
     
     async def _submit_workflow(
         self,
