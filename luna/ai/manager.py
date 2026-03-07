@@ -156,6 +156,50 @@ class LLMManager:
         
         raise RuntimeError("No LLM provider available. Check API keys in .env")
     
+    async def generate_simple(
+        self,
+        prompt: str,
+        max_tokens: int = 100,
+        temperature: float = 0.3,
+    ) -> Optional[str]:
+        """Generate simple text response (non-JSON).
+        
+        V4: For memory summarization and other simple tasks.
+        
+        Args:
+            prompt: Simple prompt (no system prompt needed)
+            max_tokens: Max tokens to generate
+            temperature: Sampling temperature
+            
+        Returns:
+            Generated text or None if failed
+        """
+        try:
+            # Use primary with empty system prompt
+            if self._primary:
+                result = await self._primary.generate(
+                    system_prompt="You are a helpful assistant. Be concise.",
+                    user_input=prompt,
+                    history=[],
+                    json_mode=False,
+                )
+                return result.text if result else None
+            
+            # Fallback
+            if self._fallback:
+                result = await self._fallback.generate(
+                    system_prompt="You are a helpful assistant. Be concise.",
+                    user_input=prompt,
+                    history=[],
+                    json_mode=False,
+                )
+                return result.text if result else None
+                
+        except Exception as e:
+            print(f"[LLMManager] Simple generation failed: {e}")
+        
+        return None
+    
     @retry(
         retry=retry_if_exception_type((httpx.HTTPError, ConnectionError)),
         stop=stop_after_attempt(3),

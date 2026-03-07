@@ -186,6 +186,7 @@ class PersonalityEngine:
         """
         # Skip analysis for temporary/generic NPCs
         if is_temporary:
+            print(f"[Personality] Skipping analysis for temporary NPC: {companion_name}")
             return BehavioralUpdate(
                 detected_traits=[],
                 impression_changes={},
@@ -194,6 +195,8 @@ class PersonalityEngine:
         
         detected: List[Tuple[BehaviorType, TraitIntensity]] = []
         impression_changes: Dict[str, int] = {}
+        
+        print(f"[Personality] Analyzing input for {companion_name}: '{user_input[:50]}...' )")
         
         # Check each behavior pattern
         for behavior_type, patterns in self.BEHAVIOR_PATTERNS.items():
@@ -221,6 +224,12 @@ class PersonalityEngine:
         
         # Check for archetype hint
         archetype = self._detect_archetype_hint(companion_name)
+        
+        # V4: Debug logging
+        print(f"[Personality] Analysis complete:")
+        print(f"  - Detected traits: {[t[0].value for t in detected]}")
+        print(f"  - Impression changes: {impression_changes}")
+        print(f"  - Archetype hint: {archetype}")
         
         return BehavioralUpdate(
             detected_traits=detected,
@@ -324,6 +333,12 @@ class PersonalityEngine:
         """
         state = self._ensure_state(companion_name)
         lines: List[str] = []
+        
+        # V4: Debug logging
+        print(f"[Personality] Building context for {companion_name}:")
+        print(f"  - Behavioral memories: {len(state.behavioral_memory)}")
+        print(f"  - Impression: T={state.impression.trust} A={state.impression.attraction} F={state.impression.fear} C={state.impression.curiosity}")
+        print(f"  - Archetype: {state.detected_archetype}")
         
         if include_behavioral and state.behavioral_memory:
             lines.append("=== BEHAVIORAL PATTERNS ===")

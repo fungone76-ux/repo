@@ -7,6 +7,7 @@ BASE_PROMPTS are sacred - they define the core visual style.
 """
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass
@@ -860,6 +861,7 @@ class ImagePromptBuilder:
         height: int = 1152,
         base_prompt: Optional[str] = None,
         secondary_characters: Optional[List[Dict[str, str]]] = None,
+        location_visual_style: Optional[str] = None,
     ) -> ImagePrompt:
         """Build image prompt from basic parameters.
         
@@ -876,6 +878,7 @@ class ImagePromptBuilder:
             height: Image height
             base_prompt: Optional explicit base prompt (from world YAML). If provided, overrides BASE_PROMPTS.
             secondary_characters: Optional list of secondary characters [{'name': 'X', 'base_prompt': 'Y'}]
+            location_visual_style: V4: Visual style of current location (used when solo/no character)
             
         Returns:
             ImagePrompt ready for generation
@@ -918,12 +921,23 @@ class ImagePromptBuilder:
                 height=height,
             )
         
-        # Single character - use original logic
-        # Get character-specific base prompt (SACRED - defines visual style)
-        # Priority: 1) Explicit base_prompt parameter, 2) BASE_PROMPTS dict, 3) NPC_BASE fallback
-        if base_prompt:
+        # V4: Check if solo mode (no character, just environment)
+        is_solo_mode = character_name == "_solo_" or character_name == ""
+        
+        if is_solo_mode:
+            # Solo mode: Use location visual style instead of character
+            print(f"[ImagePromptBuilder] Solo mode detected - using location visual style")
+            if location_visual_style:
+                # Use location style + quality tags
+                character_base = f"score_9, score_8_up, masterpiece, photorealistic, detailed, {location_visual_style}"
+            else:
+                # Fallback to generic quality tags
+                character_base = "score_9, score_8_up, masterpiece, photorealistic, detailed, atmospheric"
+        elif base_prompt:
+            # V3: Explicit base prompt provided
             character_base = base_prompt
         else:
+            # Standard character: Use BASE_PROMPTS
             character_base = BASE_PROMPTS.get(character_name, NPC_BASE)
         
         # Check if visual_description already contains the base prompt (avoid duplication)

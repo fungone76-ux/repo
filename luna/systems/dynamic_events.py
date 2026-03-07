@@ -683,8 +683,9 @@ class DynamicEventManager:
         if not effect_dict:
             return
         if isinstance(effect_dict, str):
-            # If effect is a string, treat it as a narrative effect (no mechanical effect)
-            print(f"[DynamicEvent] Effect is string, not dict: {effect_dict}")
+            # Handle string effects as special narrative flags
+            print(f"[DynamicEvent] String effect detected: {effect_dict}")
+            self._apply_string_effect(effect_dict, result, game_state)
             return
         
         for key, value in effect_dict.items():
@@ -720,6 +721,61 @@ class DynamicEventManager:
             
             elif key == 'karma':
                 result.stat_changes['karma'] = value
+    
+    def _apply_string_effect(
+        self,
+        effect_name: str,
+        result: EventResult,
+        game_state: GameState,
+    ) -> None:
+        """Apply string-based narrative effects (e.g., 'obedient', 'rebel').
+        
+        These effects set flags that can influence future interactions.
+        """
+        # Map of string effects to their mechanical outcomes
+        effect_mapping = {
+            'obedient': {
+                'flag': 'obedient_attitude',
+                'affinity_change': {'authority': 2},  # Positive with authority figures
+                'message': 'Gli insegnanti notano il tuo comportamento esemplare.'
+            },
+            'rebel': {
+                'flag': 'rebel_attitude', 
+                'affinity_change': {'authority': -2},  # Negative with authority figures
+                'message': 'Il preside ti osserva con sospetto.'
+            },
+            'helpful': {
+                'flag': 'helpful_nature',
+                'affinity_change': {},
+                'message': 'La tua gentilezza non passa inosservata.'
+            },
+            'selfish': {
+                'flag': 'selfish_nature',
+                'affinity_change': {},
+                'message': 'Qualcuno nota il tuo comportamento egoista.'
+            },
+        }
+        
+        if effect_name in effect_mapping:
+            mapping = effect_mapping[effect_name]
+            # Set flag
+            if mapping.get('flag'):
+                result.flags_set[mapping['flag']] = True
+            # Apply affinity changes
+            for companion, value in mapping.get('affinity_change', {}).items():
+                if companion == 'authority':
+                    # Special case: affects all authority figures
+                    for auth in ['preside', 'professoressa', 'segretaria', 'bibliotecaria']:
+                        if auth in game_state.affinity:
+                            result.affinity_changes[auth] = result.affinity_changes.get(auth, 0) + value
+                else:
+                    result.affinity_changes[companion] = result.affinity_changes.get(companion, 0) + value
+            # Set message
+            if mapping.get('message'):
+                result.message = mapping['message']
+        else:
+            # Unknown string effect, just log it
+            print(f"[DynamicEvent] Unknown string effect: {effect_name}")
     
     def _apply_event_effect(
         self,

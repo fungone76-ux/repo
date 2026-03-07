@@ -75,6 +75,42 @@ npc_logic:
   female_prompt: "young woman, detailed face"
   male_prompt: "young man, detailed face"
 
+# NPC Templates - Personaggi secondari con aspetto consistente
+# V4.1: Definisce NPC che appaiono in specifiche location con tratti visivi persistenti
+npc_templates:
+  segretaria:
+    id: "segretaria"
+    name: "Segretaria"
+    role: "Segretaria Scolastica"
+    # Prompt SD che definisce l'aspetto (in inglese)
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, mature woman, (chubby:1.2), (short red hair:1.3), round glasses, warm smile, professional secretary outfit..."
+    # Tag per tracciamento visivo
+    visual_tags: ["red hair", "short hair", "chubby", "glasses", "mature woman"]
+    # Descrizione fisica per l'LLM
+    physical_description: "Woman around 45 years old, plump but friendly, very short red hair and round glasses."
+    personality: "Kind, organized, slightly gossipy"
+    voice_tone: "Warm, slightly hoarse from smoking"
+    # Alias per detection automatica
+    aliases: ["segretaria", "signora in segreteria", "la rossa"]
+    # Location dove può apparire
+    spawn_locations: ["school_secretary", "school_office_luna"]
+    # Schedule orario
+    schedule:
+      Morning: "In segreteria, organizza pratiche"
+      Afternoon: "In segreteria, pranzo veloce alla scrivania"
+      Evening: "Sta chiudendo, sistema l'ultimo archivio"
+    recurring: true  # Può apparire multiple volte
+    importance: "medium"
+
+# Fallback per NPC generici (quando non c'è un template specifico)
+fallback_female:
+  base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, young woman, detailed face"
+  visual_tags: ["young woman", "detailed face"]
+
+fallback_male:
+  base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, young man, detailed face"
+  visual_tags: ["young man", "detailed face"]
+
 # Personaggio giocatore
 player_character:
   identity:
@@ -780,6 +816,144 @@ Nell'interfaccia di gioco, il tempo è mostrato nella **status bar** con un'icon
 - 🌙 **NIGHT**
 
 **Clicca sull'icona** per avanzare al prossimo periodo. Ogni nuovo giorno (Morning dopo Night) resetta automaticamente l'outfit del companion.
+
+---
+
+## 📅 companion_schedules.yaml - Routine Giornaliere (V4.2)
+
+**⚠️ NOVITÀ V4.2:** Definisce dove si trovano i companion in ogni fascia oraria.
+
+### Perché Serve
+
+Il Phase System V4.2 gestisce il ciclo giorno/notte con **8 turni per fase**:
+- Mattina → Pomeriggio → Sera → Notte (32 turni = 1 giorno)
+
+Al cambio fase, i COMPANION **si spostano automaticamente** secondo la loro routine.
+
+**NOTA:** Questo file è per i COMPANION (personaggi principali), NON per NPC secondari (segretaria, ecc.) che sono definiti in `npc_templates.yaml`.
+
+### Schema Completo
+
+```yaml
+npc_schedules:
+  # Nome del companion (deve corrispondere al file YAML)
+  NomeCompanion:
+    morning:
+      location: "location_id"           # Dove si trova
+      activity: "Descrizione attività"   # Cosa fa (contesto LLM)
+      outfit: "wardrobe_style"           # Abbigliamento consigliato
+    
+    afternoon:
+      location: "altra_location"
+      activity: "Altra attività"
+      outfit: "altro_style"
+    
+    evening:
+      location: "casa"
+      activity: "Cena e riposo"
+      outfit: "casual"
+    
+    night:
+      location: "casa"
+      activity: "Dorme"
+      outfit: "nightwear"
+```
+
+### Esempio Pratico - Prehistoric Tribe
+
+```yaml
+# File: companion_schedules.yaml
+npc_schedules:
+  # Kara - La Sciamana (vive nella caverna)
+  Kara:
+    morning:
+      location: "caverna"
+      activity: "Prepara pozioni e unguenti nella Caverna degli Antenati"
+      outfit: "ritual_paint"
+    
+    afternoon:
+      location: "villaggio"
+      activity: "Dice il futuro ai membri della tribù vicino al Fuoco Sacro"
+      outfit: "ritual_paint"
+    
+    evening:
+      location: "caverna"
+      activity: "Cena solitaria e meditazione con gli spiriti"
+      outfit: "cave_dweller"
+    
+    night:
+      location: "caverna"
+      activity: "Dorme tra i suoi cristalli e le ossa sacre"
+      outfit: "nightwear"
+
+  # Naya - La Cacciatrice (passa le giornate nella giungla)
+  Naya:
+    morning:
+      location: "giungla"
+      activity: "Caccia nella Selva Sacra, segue le tracce delle bestie"
+      outfit: "huntress_gear"
+    
+    afternoon:
+      location: "giungla"
+      activity: "Continua la caccia o pulisce le sue armi nella foresta"
+      outfit: "tracking"
+    
+    evening:
+      location: "villaggio"
+      activity: "Torna al villaggio con la preda, si riposa vicino al fuoco"
+      outfit: "huntress_gear"
+    
+    night:
+      location: "villaggio"
+      activity: "Dorme nella sua capanna dopo una giornata di caccia"
+      outfit: "nightwear"
+
+  # Zara - Figlia del Capo (gestisce la tribù)
+  Zara:
+    morning:
+      location: "tenda_capo"
+      activity: "Riceve i membri della tribù nella Tenda del Capo, decide dispute"
+      outfit: "regal_attire"
+    
+    afternoon:
+      location: "villaggio"
+      activity: "Supervisione i lavori del villaggio, distribuisce compiti"
+      outfit: "regal_attire"
+    
+    evening:
+      location: "tenda_capo"
+      activity: "Cena nella sua tenda con i consiglieri del padre"
+      outfit: "ceremony"
+    
+    night:
+      location: "tenda_capo"
+      activity: "Riposa nella sua tenda privata, protetta dalle guardie"
+      outfit: "private"
+```
+
+### Time Slot Validi
+
+| Slot | Descrizione |
+|------|-------------|
+| `morning` | Mattina (☀️) |
+| `afternoon` | Pomeriggio (🌅) |
+| `evening` | Sera (🌆) |
+| `night` | Notte (🌙) |
+
+### Cosa Succede al Cambio Fase
+
+1. **Tempo avanza**: Morning → Afternoon
+2. **Companion si sposta**: Kara va da caverna a villaggio
+3. **Se il companion lascia il player**: Auto-switch a "solo mode"
+4. **Genera immagine**: Location vuota (senza il companion)
+
+### Se Non Definisci companion_schedules
+
+Il sistema crea **schedule automatiche**:
+- Morning/Afternoon: Prima location del mondo o spawn_locations
+- Evening/Night: `{nome}_home` se esiste, altrimenti stessa location
+
+**Consiglio:** Definisci sempre `companion_schedules.yaml` per un'esperienza più immersiva!
 
 ---
 
@@ -1578,6 +1752,11 @@ Il player può scoprirle:
 
 ### Tempo
 - [ ] `time.yaml` con 4 time slots (Morning, Afternoon, Evening, Night)
+- [ ] **`companion_schedules.yaml` (V4.2)** per routine giornaliere (opzionale ma consigliato)
+  - [ ] Ogni companion ha schedule per 4 fasce orarie
+  - [ ] Location valide definite in `locations.yaml`
+  - [ ] Outfit corrispondono a wardrobe del companion
+  - [ ] **NOTA:** Questo è per COMPANION principali, NON per NPC secondari (segretaria, ecc.)
 
 ### Quest
 - [ ] Almeno una quest definita

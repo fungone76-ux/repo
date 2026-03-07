@@ -151,6 +151,22 @@ luna-rpg-v4/
 │   │   ├── affinity_calculator.py # NUOVO: calcolo affinità regex
 │   │   ├── companion_locator.py # Tracciamento posizione NPC
 │   │   ├── gameplay_manager.py  # Manager gameplay actions
+│   │   ├── movement.py          # 🆕 V4.3: Gestione movimento player
+│   │   ├── state_memory.py      # 🆕 V4.3: Unificazione stato + memoria
+│   │   ├── intro.py             # 🆕 V4.3: Generazione scena iniziale
+│   │   ├── activity_system.py   # 🆕 V4.2: Sistema attività NPC
+│   │   ├── phase_manager.py     # 🆕 V4.2: Gestione fasi giornata
+│   │   ├── schedule_manager.py  # 🆕 V4.2: Schedule giornaliere NPC
+│   │   ├── time_manager.py      # 🆕 V4.1: Gestione tempo e scadenze
+│   │   ├── pose_extractor.py    # Estrazione pose da input
+│   │   ├── initiative_system.py # Gestione iniziativa conversazioni
+│   │   # 🆕 V4.3: Refactored components (from engine.py)
+│   │   ├── turn_orchestrator.py   # 🆕 V4.3: Coordinamento turno 10-step
+│   │   ├── npc_detector.py        # 🆕 V4.3: Detection NPC/companion
+│   │   ├── input_preprocessor.py  # 🆕 V4.3: Parsing input & comandi
+│   │   ├── response_processor.py  # 🆕 V4.3: Validazione LLM & retry
+│   │   ├── state_updater.py       # 🆕 V4.3: Aggiornamento stato
+│   │   └── media_coordinator.py   # 🆕 V4.3: Coordinamento media
 │   │   ├── gameplay/            # Sottosistemi gameplay
 │   │   │   ├── affinity.py
 │   │   │   ├── inventory.py
@@ -161,6 +177,10 @@ luna-rpg-v4/
 │   │       ├── manager.py
 │   │       ├── dialogue_sequence.py
 │   │       └── interaction_rules.py
+│   │
+│   ├── utils/                   # 🆕 V4.3: UTILITY MODULES
+│   │   ├── logging_config.py    # Structured logging
+│   │   └── retry_decorator.py   # Exponential backoff per LLM
 │   │
 │   ├── ui/                      # INTERFACCIA UTENTE
 │   │   ├── app.py               # Setup QApplication
@@ -464,13 +484,15 @@ class LLMResponse:
 
 **Metafora:** Il GameEngine è come un direttore d'orchestra. Non suona alcuno strumento, ma coordina tutti i musicisti (sistemi) per creare l'armonia (esperienza di gioco).
 
+**V4.3 REFACTORING:** La logica del game loop è stata estratta in `TurnOrchestrator` per migliorare modularità e testabilità. Il GameEngine mantiene il ruolo di coordinatore ma delega l'esecuzione del turno.
+
 **Responsabilità:**
 1. Tenere riferimenti a TUTTI i sistemi
-2. Eseguire il game loop in sequenza corretta
-3. Gestire il flusso di dati tra sistemi
-4. Fornire API pulite alla UI
+2. Inizializzare e coordinare i sottosistemi
+3. Fornire API pulite alla UI
+4. Delegare l'esecuzione del turno a `TurnOrchestrator`
 
-**Architettura interna:**
+**Architettura V4.3 (Modulare):**
 ```python
 class GameEngine:
     # Dati
@@ -493,45 +515,73 @@ class GameEngine:
     story_director: StoryDirector
     memory_manager: MemoryManager
     multi_npc_manager: MultiNPCManager
+    
+    # V4.3: Modular Components (refactored from engine.py)
+    turn_orchestrator: TurnOrchestrator      # Main turn flow coordinator
+    npc_detector: NPCDetector                # NPC/companion detection
+    input_preprocessor: InputPreprocessor    # Input parsing & commands
+    response_processor: ResponseProcessor    # LLM validation & retry
+    state_updater: StateUpdater              # Game state updates
+    media_coordinator: MediaCoordinator      # Media generation coordination
 ```
 
-**Flusso Tipico:**
+**Flusso V4.3 (Delegato):**
 ```python
 # UI chiama:
 result = await engine.process_turn("Ciao Luna!")
 
-# GameEngine esegue:
+# GameEngine delega a TurnOrchestrator:
 async def process_turn(self, user_input):
-    # 1. Memorizza input per calcolo affinity
-    self._last_user_input = user_input
+    # 1. Skip check preliminare
+    if not user_input or not user_input.strip():
+        return TurnResult(text="[Nessun input ricevuto]", ...)
     
-    # 2. Analizza comportamento
-    behaviors = self.personality_engine.analyze_input(user_input)
+    # 2. Delega completa a TurnOrchestrator
+    return await self.turn_orchestrator.execute_turn(user_input)
+
+# TurnOrchestrator esegue i 10 step:
+async def execute_turn(self, user_input):
+    # Step 0: Event checking, Movement, Commands
+    preprocess_result = await self._step_preprocess(user_input, game_state)
     
-    # 3. Controlla quest
-    activated = self.quest_engine.check_activations(game_state)
-    for quest_id in activated:
-        self.quest_engine.activate_quest(quest_id, game_state)
+    # Step 1-2: Companion switching
+    switched, is_temp = await self._step_companion_switch(user_input, game_state)
     
-    # 4. Costruisce prompt
-    system_prompt = self.prompt_builder.build(...)
+    # Step 3: Build prompt
+    system_prompt = self._step_build_prompt(game_state, ...)
     
-    # 5. Chiama LLM
-    llm_response = await self.llm_manager.generate(system_prompt, user_input)
+    # Step 4-5: LLM Generation with retry
+    llm_response, provider = await self._step_generate_llm(system_prompt, ...)
     
-    # 6. Valida e applica cambiamenti
-    validated = self._validate_updates(llm_response.updates)
-    self._apply_updates(validated)
+    # Step 6-7: Update state
+    updates = self._step_update_state(game_state, llm_response)
     
-    # 7. Genera immagine (async)
-    asyncio.create_task(self._generate_image(llm_response))
+    # Step 8: Media generation (async)
+    media_result = await self._step_generate_media(game_state, llm_response)
     
-    # 8. Salva stato
-    await self.state_manager.save(db)
+    # Step 9: Save state
+    await self._step_save_memory(game_state, user_input, llm_response)
     
-    # 9. Ritorna risultato
-    return TurnResult(text=llm_response.text, ...)
+    # Step 10: Build result
+    return self._step_build_result(game_state, llm_response, media_result, ...)
 ```
+
+**Vantaggi del Refactoring V4.3:**
+- **Separazione dei Concerni:** Ogni componente ha una responsabilità unica
+- **Testabilità:** I componenti possono essere testati isolatamente
+- **Manutenibilità:** Modifiche localizzate senza impatto sull'engine principale
+- **Code Reduction:** Engine.py ridotto da ~3100 a ~1600 righe
+
+**Componenti Refactored (V4.3):**
+
+| Componente | File | Righe | Responsabilità |
+|------------|------|-------|----------------|
+| TurnOrchestrator | `systems/turn_orchestrator.py` | ~950 | Coordinamento 10-step turn |
+| NPCDetector | `systems/npc_detector.py` | ~220 | Detection companion/NPC con word boundaries |
+| InputPreprocessor | `systems/input_preprocessor.py` | ~260 | Parsing input, command handling |
+| ResponseProcessor | `systems/response_processor.py` | ~200 | LLM validation, retry logic |
+| StateUpdater | `systems/state_updater.py` | ~250 | Game state updates |
+| MediaCoordinator | `systems/media_coordinator.py` | ~260 | Media generation coordination |
 
 ### 4.2 StateManager - Il Guardiano del Tempo
 
@@ -640,6 +690,87 @@ calculator.calculate("Ciao Luna, sei bellissima oggi!", "luna", turn=5)
 # - Bonus: +0 (prima interazione)
 # - Finale: +4 affinità
 ```
+
+---
+
+### 4.4 Phase System V4.2 - Il Tempo che Scorre (NUOVO)
+
+**Problema:** Il tempo deve avanzare in modo significativo, con NPC che seguono routine giornaliere e il mondo che cambia.
+
+**Soluzione:** Sistema a fasi con 8 turni per periodo.
+
+#### Concetti Chiave
+
+**Le 4 Fasi:**
+- **Mattina** (8 turni) → Pomeriggio → Sera → Notte → (ciclo)
+- 32 turni totali = 1 giorno completo
+
+**Cosa succede al cambio fase:**
+1. Il tempo avanza (Morning → Afternoon)
+2. Gli NPC si spostano secondo la loro schedule
+3. Se il companion del player se ne va → auto-switch a "solo"
+4. Viene generata una nuova immagine della location (vuota)
+
+**Freeze System:**
+Il player può bloccare il conteggio turni con comandi come "pausa" o "freeze". Utile per scene romantiche o importanti dove non si vuole che il tempo scada.
+
+#### NPC Schedules
+
+Ogni NPC ha una routine giornaliera che definisce:
+- **Location**: Dove si trova in ogni fascia oraria
+- **Activity**: Cosa sta facendo (contesto per LLM)
+- **Outfit**: Abbigliamento consigliato per quella fase
+
+**Esempio - Kara (Sciamana):**
+```yaml
+npc_schedules:
+  Kara:
+    morning:
+      location: "caverna"
+      activity: "Prepara pozioni mistiche"
+      outfit: "ritual_paint"
+    afternoon:
+      location: "villaggio"
+      activity: "Dice il futuro ai tribù"
+      outfit: "ritual_paint"
+```
+
+#### Componenti
+
+**PhaseManager:**
+- Gestisce il conteggio turni per fase
+- Esegue il cambio fase quando necessario
+- Gestisce il freeze/unfreeze
+
+**ScheduleManager:**
+- Carica schedule da YAML o genera default
+- Risolve location NPC per time of day
+- Trova NPC presenti in una location
+
+#### Flusso Cambio Fase
+
+```
+Turno 8/8 Mattina
+    ↓
+PhaseManager.on_turn_end() → PhaseChangeResult
+    ↓
+1. Avanza tempo: Morning → Afternoon
+2. Sposta NPC: Kara(caverna→villaggio), Naya(giungla→giungla)
+3. Verifica: Kara era con player? Sì → companion_left=True
+4. Switch companion: "Kara" → "_solo_"
+5. Genera messaggio: "🌅 Il sole sale più alto... è pomeriggio."
+6. UI riceve: needs_location_refresh=True
+7. UI genera: immagine location vuota (senza Kara)
+```
+
+#### Integrazione con Altri Sistemi
+
+| Sistema | Interazione |
+|---------|-------------|
+| Quest | Deadline funzionano indipendentemente |
+| Events | Eventi globali attivati ogni turno |
+| Movement | Quando player entra, auto-switch a NPC presente |
+| Media | Genera immagine location vuota quando companion lascia |
 
 ---
 

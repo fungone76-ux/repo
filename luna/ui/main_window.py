@@ -23,7 +23,9 @@ from PySide6.QtGui import QAction
 from luna.core.models import TimeOfDay
 from luna.core.config import get_settings
 
-from luna.core.engine import GameEngine, TurnResult
+from luna.core.engine import GameEngine
+from luna.core.models import TurnResult
+from luna.core.debug_tracer import tracer, CheckStatus
 from luna.ui.widgets import (
     QuestTrackerWidget,
     StoryBeatsWidget,
@@ -39,6 +41,7 @@ from luna.ui.companion_locator_widget import CompanionLocatorWidget
 from luna.ui.action_bar import ActionBarWidget, QuickActionBar
 from luna.ui.feedback_visualizer import FeedbackVisualizer
 from luna.ui.quest_choice_widget import QuestChoiceWidget, QuestChoice, PendingChoiceManager
+from luna.ui.save_dialog import SaveDialog
 
 
 class MainWindow(QMainWindow):
@@ -275,11 +278,8 @@ class MainWindow(QMainWindow):
         self.act_audio.triggered.connect(self._on_toggle_audio)
         toolbar.addAction(self.act_audio)
 
-        # Time advance button
-        self.act_time = QAction("☀️ Time", self)
-        self.act_time.setToolTip("Advance time of day")
-        self.act_time.triggered.connect(self._on_advance_time)
-        toolbar.addAction(self.act_time)
+        # V4.1: Removed manual time button - time now auto-advances
+        # Time is shown in status bar instead
 
         # Active companion indicator
         self.lbl_companion = QLabel("👤 Companion")
@@ -355,35 +355,88 @@ class MainWindow(QMainWindow):
         self.lbl_location = QLabel("📍 Unknown")
         self.lbl_location.setStyleSheet("color: #4CAF50; padding: 0 10px;")
 
-        # Time widget
-        self.btn_time = QPushButton("☀️ MORNING")
-        self.btn_time.setToolTip("Click to advance time")
-        self.btn_time.setCursor(Qt.PointingHandCursor)
-        self.btn_time.setStyleSheet("""
+        # V4.2: Time display with phase indicator (8 turns per phase)
+        self.lbl_time = QLabel("☀️ MORNING")
+        self.lbl_time.setStyleSheet("""
+            color: #FFD700;
+            padding: 0 15px;
+            font-size: 13px;
+            font-weight: bold;
+            min-width: 120px;
+        """)
+        self.lbl_time.setToolTip("8 turni per fase. Gli indicatori verdi mostrano i turni passati.")
+        
+        # V4.2: Phase turn indicator (8 squares)
+        self.phase_turn_widget = QWidget()
+        phase_turn_layout = QHBoxLayout(self.phase_turn_widget)
+        phase_turn_layout.setContentsMargins(0, 0, 0, 0)
+        phase_turn_layout.setSpacing(2)
+        
+        self.turn_indicators = []
+        for i in range(8):
+            indicator = QLabel("◼")
+            indicator.setStyleSheet("""
+                color: #333;
+                font-size: 16px;
+                padding: 0 2px;
+            """)
+            indicator.setToolTip(f"Turno {i+1}")
+            self.turn_indicators.append(indicator)
+            phase_turn_layout.addWidget(indicator)
+        
+        # V4.2: Freeze/Play buttons
+        self.btn_freeze = QPushButton("⏸️")
+        self.btn_freeze.setStyleSheet("""
             QPushButton {
-                background-color: #4CAF50;
-                border: 2px solid #4CAF50;
-                border-radius: 6px;
-                padding: 6px 16px;
-                font-size: 13px;
-                font-weight: bold;
-                color: #000;
-                min-width: 120px;
+                background-color: #444;
+                color: white;
+                border: 1px solid #666;
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 14px;
             }
             QPushButton:hover {
-                background-color: #66BB6A;
+                background-color: #555;
             }
         """)
-        self.btn_time.clicked.connect(self._on_advance_time)
+        self.btn_freeze.setToolTip("Blocca i turni (pausa)")
+        self.btn_freeze.setMaximumWidth(40)
+        self.btn_freeze.clicked.connect(self._on_freeze_turns)
+        
+        self.btn_play = QPushButton("▶️")
+        self.btn_play.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: 1px solid #45a049;
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #333;
+                color: #666;
+            }
+        """)
+        self.btn_play.setToolTip("Riprendi i turni")
+        self.btn_play.setMaximumWidth(40)
+        self.btn_play.clicked.connect(self._on_unfreeze_turns)
+        self.btn_play.setEnabled(False)  # Inizialmente disabilitato
 
         self.statusbar.addWidget(self.lbl_status, stretch=1)
         self.statusbar.addWidget(self.lbl_turn)
         self.statusbar.addWidget(self.lbl_location)
+        self.statusbar.addWidget(self.lbl_time)
+        self.statusbar.addWidget(self.phase_turn_widget)
+        self.statusbar.addWidget(self.btn_freeze)
+        self.statusbar.addWidget(self.btn_play)
         
         # Debug: ensure turn label is visible
         self.lbl_turn.setMinimumWidth(100)
         self.lbl_turn.setAlignment(Qt.AlignCenter)
-        self.statusbar.addPermanentWidget(self.btn_time)
 
     async def initialize_game(
         self,
@@ -463,12 +516,51 @@ class MainWindow(QMainWindow):
         state = self.engine.get_game_state()
         self.lbl_turn.setText(f"Turn: {state.turn_count}")
         
+        # V4.2: Update turn indicators (8 squares)
+        with tracer.step_context("UI Status Update", "ui"):
+            tracer.expect("phase_manager_exists", True)
+            tracer.actual("phase_manager_exists", self.engine.phase_manager is not None)
+            tracer.expect("indicator_count", 8)
+            tracer.actual("indicator_count", len(self.turn_indicators))
+            
+            if self.engine.phase_manager:
+                turns_in_phase = self.engine.phase_manager._turns_in_phase
+                is_frozen = self.engine.phase_manager.is_frozen
+                
+                # Verifica consistenza: turn_count % 8 dovrebbe essere = turns_in_phase (approssimativamente)
+                expected_green = turns_in_phase
+                actual_green = sum(1 for i in range(8) if i < turns_in_phase)
+                
+                tracer.expect("green_indicators", expected_green)
+                tracer.actual("green_indicators", actual_green, f"turns_in_phase={turns_in_phase}")
+                tracer.actual("is_frozen", is_frozen)
+                
+                print(f"[UI] Updating turn indicators: turns_in_phase={turns_in_phase}, frozen={is_frozen}")
+                
+                for i, indicator in enumerate(self.turn_indicators):
+                    if is_frozen:
+                        indicator.setStyleSheet("color: #FFD700; font-size: 16px; padding: 0 2px;")
+                    elif i < turns_in_phase:
+                        indicator.setStyleSheet("color: #4CAF50; font-size: 16px; padding: 0 2px;")
+                    else:
+                        indicator.setStyleSheet("color: #333; font-size: 16px; padding: 0 2px;")
+                    indicator.repaint()
+                
+                # Aggiorna stato pulsanti
+                self.btn_freeze.setEnabled(not is_frozen)
+                self.btn_play.setEnabled(is_frozen)
+            else:
+                tracer.critical_alert("UI Error", "PhaseManager is None - turn indicators not working!")
+                for indicator in self.turn_indicators:
+                    indicator.setStyleSheet("color: #333; font-size: 16px; padding: 0 2px;")
+        
         # Get location name (not ID) for display
         location_name = state.current_location
         if self.engine.world and state.current_location in self.engine.world.locations:
             location_obj = self.engine.world.locations[state.current_location]
             location_name = location_obj.name
         self.lbl_location.setText(f"📍 {location_name}")
+        print(f"[StatusBar] Location updated: {location_name}")
         
         # Update time button
         time_val = state.time_of_day
@@ -489,17 +581,9 @@ class MainWindow(QMainWindow):
             TimeOfDay.NIGHT: "🌙",
         }
         icon = time_icons.get(time_enum, "🕐")
-        self.btn_time.setText(f"{icon} {time_str.upper()}")
+        self.lbl_time.setText(f"{icon} {time_str.upper()}")
         
-        # Update toolbar time action
-        if hasattr(self, 'act_time'):
-            self.act_time.setText(f"{icon} Time")
-        
-        # Update tooltip with next time
-        times = list(TimeOfDay)
-        current_idx = times.index(time_enum)
-        next_time = times[(current_idx + 1) % len(times)]
-        self.btn_time.setToolTip(f"Click to advance to {next_time.value}")
+        # V4.1: Time now auto-advances every 5 turns or via rest commands
         
         # Update active companion label
         if self.engine:
@@ -519,29 +603,46 @@ class MainWindow(QMainWindow):
         self._update_video_toggle()
         self._update_personality_display()
 
-    def _update_location_widget(self) -> None:
-        """Update location widget display."""
+    def _update_location_widget(self, force_location_id: Optional[str] = None) -> None:
+        """Update location widget display.
+        
+        Args:
+            force_location_id: If provided, show this location instead of current
+        """
         if not self.engine or not self.engine.location_manager:
+            print("[LocationWidget] No engine or location_manager")
             return
         
         loc_mgr = self.engine.location_manager
-        current = loc_mgr.get_current_location()
-        instance = loc_mgr.get_current_instance()
         
-        if not current or not instance:
+        # V4 FIX: If forced location, get that instead of current
+        if force_location_id:
+            current = loc_mgr.get_location(force_location_id)
+            instance = loc_mgr.get_instance(force_location_id)
+            print(f"[LocationWidget] Forced location: {force_location_id}")
+        else:
+            current = loc_mgr.get_current_location()
+            instance = loc_mgr.get_current_instance()
+        
+        print(f"[LocationWidget] Current location: {current.name if current else 'None'}, Instance: {instance is not None}")
+        
+        if not current:
+            print("[LocationWidget] No current location")
+            return
+        if not instance:
+            print(f"[LocationWidget] No instance for location: {loc_mgr.game_state.current_location}")
             return
         
-        # Get visible locations
-        visible_ids = loc_mgr.get_visible_locations()
-        visible_names = []
-        for loc_id in visible_ids:
-            loc = loc_mgr.get_location(loc_id)
-            if loc:
-                visible_names.append(loc.name)
+        # V4: Get characters present in current location instead of exits
+        game_state = self.engine.get_game_state()
+        characters_present = []
+        
+        # Check which companions are available at this location (from world definition)
+        if current.available_characters:
+            characters_present.extend(current.available_characters)
         
         # Get description
-        state = self.engine.get_game_state()
-        desc = instance.get_effective_description(current, state.time_of_day)
+        desc = instance.get_effective_description(current, game_state.time_of_day)
         
         # Handle both enum and string state
         loc_state = instance.current_state.value if hasattr(instance.current_state, 'value') else str(instance.current_state)
@@ -549,8 +650,9 @@ class MainWindow(QMainWindow):
             name=current.name,
             description=desc,
             state=loc_state,
-            exits=visible_names,
+            characters=characters_present,
         )
+        print(f"[LocationWidget] Updated: {current.name}, desc={desc[:50]}..., characters={len(characters_present)}")
 
     def _update_outfit_widget(self) -> None:
         """Update outfit widget display."""
@@ -808,8 +910,14 @@ class MainWindow(QMainWindow):
 
             # Update UI
             self._display_result(result)
+            
+            # V4.2 DEBUG: Check turn indicators before update
+            if self.engine and self.engine.phase_manager:
+                print(f"[MainWindow] BEFORE _update_status: turns_in_phase={self.engine.phase_manager._turns_in_phase}")
             self._update_status()
-            self._update_location_widget()
+            if self.engine and self.engine.phase_manager:
+                print(f"[MainWindow] AFTER _update_status: turns_in_phase={self.engine.phase_manager._turns_in_phase}")
+            self._update_location_widget(force_location_id=result.new_location_id)  # V4 FIX: Pass new location
             self._update_outfit_widget()  # Aggiunto aggiornamento outfit
             self._update_quest_tracker()
             self._update_story_beats()
@@ -908,9 +1016,14 @@ class MainWindow(QMainWindow):
         # Show character/narrator response
         current_companion = result.current_companion or (self.engine.companion if self.engine else "Narrator")
         
-        # Use "NPC" label for temporary companions, actual name for regular companions
-        display_name = "NPC" if result.is_temporary_companion else current_companion
-        self.story_log.append_character_message(result.text, display_name)
+        # V3.3 FIX: Handle system messages (like farewell) differently
+        if result.provider_used == "system" and current_companion == "_solo_":
+            # This is a system message about being alone, show as system message
+            self.story_log.append_system_message(result.text)
+        else:
+            # Use "NPC" label for temporary companions, actual name for regular companions
+            display_name = "NPC" if result.is_temporary_companion else current_companion
+            self.story_log.append_character_message(result.text, display_name)
         
         # Play audio if available and enabled
         if result.audio_path:
@@ -1260,22 +1373,43 @@ class MainWindow(QMainWindow):
 
     @asyncSlot()
     async def _on_save(self) -> None:
-        """Save game to database."""
+        """Save game to database with custom name."""
         print("[MainWindow] Save button clicked")
         
         if not self.engine or not self.engine.state_manager.is_loaded:
             QMessageBox.warning(self, "Save", "No game to save!")
             return
         
+        # Generate default name based on current state
+        state = self.engine.get_game_state()
+        companion = state.active_companion
+        location = state.current_location
+        turn = state.turn_count
+        default_name = f"{companion} - {location} (Turn {turn})"
+        
+        # Show save dialog
+        save_name, accepted = SaveDialog.get_save_name_dialog(default_name, self)
+        
+        if not accepted:
+            print("[MainWindow] Save cancelled by user")
+            return
+        
+        # Use default if empty
+        if not save_name:
+            save_name = default_name
+        
         try:
             from luna.core.database import get_db_session
+            # Debug: print current location before save
+            current_loc = self.engine.get_game_state().current_location
+            print(f"[Save] Current location before save: {current_loc}")
             async with get_db_session() as db:
-                success = await self.engine.state_manager.save(db)
+                success = await self.engine.state_manager.save(db, name=save_name)
                 if success:
                     session_id = self.engine.state_manager.current.session_id
-                    self.statusbar.showMessage(f"Game saved! (Session: {session_id})", 3000)
-                    self.feedback.success("💾 Salvato", f"Partita salvata (ID: {session_id})")
-                    print(f"[MainWindow] Game saved to slot {session_id}")
+                    self.statusbar.showMessage(f"💾 Salvato: {save_name}", 5000)
+                    self.feedback.success("💾 Salvato", f"'{save_name}' salvato!")
+                    print(f"[MainWindow] Game saved: '{save_name}' (ID: {session_id})")
                 else:
                     QMessageBox.critical(self, "Save Error", "Failed to save game!")
         except Exception as e:
@@ -1283,20 +1417,227 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, "Save Error", f"Error saving: {str(e)}")
+    
+    async def _handle_delete_save(self, session_id: int) -> None:
+        """Handle save deletion with async database operations."""
+        from luna.core.database import get_db_session, get_db_manager
+        
+        try:
+            async with get_db_session() as db:
+                db_manager = get_db_manager()
+                success = await db_manager.delete_save(db, session_id)
+                
+                if success:
+                    QMessageBox.information(self, "Eliminato", f"Salvataggio {session_id} eliminato con successo.")
+                    # Refresh the load dialog to show updated list
+                    await self._on_load()
+                else:
+                    QMessageBox.warning(self, "Errore", "Salvataggio non trovato.")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Errore durante l'eliminazione: {e}")
 
     @asyncSlot()
     async def _on_load(self) -> None:
         """Load game from database - restores EVERYTHING."""
         print("[MainWindow] Load button clicked")
         
-        from PySide6.QtWidgets import QInputDialog
-        session_id, ok = QInputDialog.getInt(
-            self, "Load Game", "Enter save slot number:", 
-            value=1, minValue=1, maxValue=9999
-        )
+        # Get available saves from database
+        from luna.core.database import get_db_session, get_db_manager
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QPushButton
+        from PySide6.QtCore import Qt
         
-        if not ok:
+        try:
+            async with get_db_session() as db:
+                db_manager = get_db_manager()
+                saves = await db_manager.list_saves(db)
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Could not load save list: {e}")
             return
+        
+        if not saves:
+            QMessageBox.information(self, "No Saves", "Nessun salvataggio trovato!")
+            return
+        
+        # Create custom dialog to show available saves
+        dialog = QDialog(self)
+        dialog.setWindowTitle("📂 Carica Partita")
+        dialog.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Title
+        title = QLabel("Seleziona un salvataggio:")
+        title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        layout.addWidget(title)
+        
+        # List widget for saves
+        list_widget = QListWidget()
+        list_widget.setStyleSheet("""
+            QListWidget {
+                background-color: #2d2d2d;
+                border: 1px solid #444;
+                border-radius: 4px;
+                color: #fff;
+            }
+            QListWidget::item {
+                padding: 10px;
+                border-bottom: 1px solid #444;
+            }
+            QListWidget::item:selected {
+                background-color: #E91E63;
+            }
+            QListWidget::item:hover {
+                background-color: #444;
+            }
+        """)
+        
+        # Add saves to list
+        save_map = {}  # Maps list index to session_id
+        for i, save in enumerate(saves):
+            session_id = save.get('session_id', i)
+            name = save.get('name') or f"Salvataggio {session_id}"
+            world_id = save.get('world_id', 'unknown')
+            companion = save.get('active_companion', 'unknown')
+            location = save.get('current_location', 'unknown')
+            turn_count = save.get('turn_count', 0)
+            updated_at = save.get('updated_at', 'unknown')
+            
+            # Format the display text
+            display_text = f"📁 {name}\n"
+            display_text += f"   👤 {companion} | 📍 {location} | 🎲 Turno {turn_count}\n"
+            display_text += f"   🕐 {updated_at}"
+            
+            item = QListWidgetItem(display_text)
+            item.setData(Qt.UserRole, session_id)  # Store session_id
+            list_widget.addItem(item)
+            save_map[i] = save
+        
+        layout.addWidget(list_widget)
+        
+        # Info label
+        info = QLabel(f"Trovati {len(saves)} salvataggi")
+        info.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(info)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        btn_load = QPushButton("📂 Carica")
+        btn_load.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #555;
+            }
+        """)
+        btn_load.setEnabled(False)  # Disabled until selection
+        
+        btn_cancel = QPushButton("❌ Annulla")
+        btn_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: #666;
+                color: white;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #777;
+            }
+        """)
+        
+        btn_delete = QPushButton("🗑️ Elimina")
+        btn_delete.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+            QPushButton:disabled {
+                background-color: #555;
+            }
+        """)
+        btn_delete.setEnabled(False)  # Disabled until selection
+        btn_delete.setToolTip("Elimina permanentemente il salvataggio selezionato")
+        
+        btn_layout.addWidget(btn_load)
+        btn_layout.addWidget(btn_delete)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+        
+        # Connect signals
+        selected_session_id = [None]  # Use list to allow modification in closure
+        
+        def on_selection_changed():
+            current = list_widget.currentItem()
+            if current:
+                selected_session_id[0] = current.data(Qt.UserRole)
+                btn_load.setEnabled(True)
+                btn_delete.setEnabled(True)
+            else:
+                selected_session_id[0] = None
+                btn_load.setEnabled(False)
+                btn_delete.setEnabled(False)
+        
+        def on_double_click(item):
+            selected_session_id[0] = item.data(Qt.UserRole)
+            dialog.accept()
+        
+        # Delete operation (handled synchronously via dialog result)
+        delete_requested = [False]
+        session_to_delete = [None]
+        
+        def on_delete_clicked():
+            current = list_widget.currentItem()
+            if not current:
+                return
+            
+            session_id_to_delete = current.data(Qt.UserRole)
+            save_name = save_map.get(list_widget.row(current), {}).get('name', f'Salvataggio {session_id_to_delete}')
+            
+            # Confirm deletion (synchronous QMessageBox)
+            reply = QMessageBox.question(
+                dialog,
+                "Conferma Eliminazione",
+                f'Sei sicuro di voler eliminare "{save_name}"?\n\nQuesta azione è irreversibile!',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                delete_requested[0] = True
+                session_to_delete[0] = session_id_to_delete
+                dialog.reject()  # Close dialog to handle delete in main flow
+        
+        list_widget.itemSelectionChanged.connect(on_selection_changed)
+        list_widget.itemDoubleClicked.connect(on_double_click)
+        btn_load.clicked.connect(dialog.accept)
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_delete.clicked.connect(on_delete_clicked)
+        
+        # Show dialog
+        result = dialog.exec()
+        
+        # Handle delete request
+        if delete_requested[0] and session_to_delete[0] is not None:
+            await self._handle_delete_save(session_to_delete[0])
+            return  # Return to main window after delete
+        
+        if result != QDialog.Accepted or selected_session_id[0] is None:
+            return
+        
+        session_id = selected_session_id[0]
         
         try:
             from luna.core.database import get_db_session, get_db_manager
@@ -1350,6 +1691,23 @@ class MainWindow(QMainWindow):
                 game_state.active_quests = state.active_quests
                 game_state.completed_quests = state.completed_quests
                 
+                # V4.1: Restore active companion (critical fix)
+                game_state.active_companion = state.active_companion
+                self.engine.companion = state.active_companion
+                print(f"[Load] Restored companion: {state.active_companion}")
+                
+                # V3.3: Explicitly restore location (critical fix)
+                game_state.current_location = state.current_location
+                print(f"[Load] Restored location: {state.current_location}")
+                
+                # Re-initialize location manager to pick up new location
+                if self.engine.location_manager:
+                    # Force rediscovery of current location
+                    current_loc = self.engine.location_manager.get_current_location()
+                    print(f"[Load] Location manager current: {current_loc.name if current_loc else 'None'}")
+                    # Refresh to ensure discovered state is correct
+                    self.engine.location_manager.refresh_after_load()
+                
                 # Connect callbacks
                 if self.engine.event_manager:
                     self.engine.event_manager.on_event_changed = self._on_event_changed
@@ -1380,6 +1738,8 @@ class MainWindow(QMainWindow):
 
     def _on_advance_time(self) -> None:
         """Advance time of day when button is clicked."""
+        from luna.core.models import TimeOfDay
+        
         if not self.engine:
             return
         
@@ -1404,7 +1764,6 @@ class MainWindow(QMainWindow):
         else:
             time_str = str(new_time)
             
-        from luna.core.models import TimeOfDay
         try:
             time_enum = TimeOfDay(time_str) if isinstance(time_str, str) else new_time
         except ValueError:
@@ -1413,7 +1772,26 @@ class MainWindow(QMainWindow):
         message = time_names.get(time_enum, f"Time passes... {time_str}")
         self.story_log.append_system_message(message)
 
-    
+    def _on_freeze_turns(self) -> None:
+        """V4.2: Freeze turn counting."""
+        if not self.engine or not self.engine.phase_manager:
+            return
+        
+        self.engine.phase_manager.freeze()
+        self._update_status()
+        self.story_log.append_system_message("⏸️ Turn counting paused - Phase time is frozen")
+        self.feedback.info("⏸️ Pausa", "Turn counting paused")
+
+    def _on_unfreeze_turns(self) -> None:
+        """V4.2: Unfreeze turn counting."""
+        if not self.engine or not self.engine.phase_manager:
+            return
+        
+        self.engine.phase_manager.unfreeze()
+        self._update_status()
+        self.story_log.append_system_message("▶️ Turn counting resumed - Phase time advances normally")
+        self.feedback.success("▶️ Riprendi", "Turn counting resumed")
+
     def _update_personality_display(self) -> None:
         """Update personality archetype and impression display."""
         if not self.engine or not self.engine.personality_engine:

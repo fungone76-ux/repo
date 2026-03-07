@@ -30,16 +30,20 @@ companion:
   wardrobe:
     cleaning_uniform:
       description: "Uniforme da lavoro grigia, pratica ma che evidenzia curve mature"
+      sd_prompt: "grey cleaning uniform, work clothes, practical outfit, mature woman, school janitor uniform, grey jumpsuit"
     
     casual:
       description: "Vestiti semplici per uscire, timidamente curati"
+      sd_prompt: "simple casual clothes, modest outfit, mature woman, everyday wear"
     
     home:
       description: "Vestaglia e abiti casalinghi intimi, domestici"
+      sd_prompt: "homewear, casual house clothes, robe, domestic outfit, mature woman"
       special: false
     
     special:
       description: "Lingerie semplice ma provocante, scoperta femminilità"
+      sd_prompt: "simple lingerie, mature woman, intimate apparel"
       special: true
   
   # ============================================================

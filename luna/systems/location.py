@@ -82,6 +82,26 @@ class LocationManager:
         """Get current location definition."""
         return self.get_location(self.game_state.current_location)
     
+    def refresh_after_load(self) -> None:
+        """Refresh location state after loading a save.
+        
+        Ensures current location is marked as discovered and
+        all state is synchronized with the loaded game state.
+        """
+        current_id = self.game_state.current_location
+        if current_id and current_id in self._instances:
+            # Mark current location as discovered
+            self._instances[current_id].discovered = True
+            print(f"[LocationManager] Refreshed after load: {current_id} marked as discovered")
+        
+        # Ensure we have instances for all locations
+        for loc_id, loc_def in self.world.locations.items():
+            if loc_id not in self._instances:
+                self._instances[loc_id] = LocationInstance(
+                    location_id=loc_id,
+                    discovered=not loc_def.hidden,
+                )
+    
     def get_current_instance(self) -> Optional[LocationInstance]:
         """Get current location instance."""
         return self.get_instance(self.game_state.current_location)
@@ -205,18 +225,18 @@ class LocationManager:
         if instance and instance.current_state == LocationState.LOCKED:
             return False, target.closed_description or "È chiuso a chiave."
         
-        # Check parent requirement
-        if target.requires_parent and target.parent_location != self.game_state.current_location:
-            if target.parent_location:
-                parent = self.get_location(target.parent_location)
-                parent_name = parent.name if parent else "area"
-                return False, f"Devi essere in {parent_name} per entrare qui."
-            return False, "Non puoi arrivarci da qui."
+        # V4.1: Removed parent requirement check - can go anywhere
+        # if target.requires_parent and target.parent_location != self.game_state.current_location:
+        #     if target.parent_location:
+        #         parent = self.get_location(target.parent_location)
+        #         parent_name = parent.name if parent else "area"
+        #         return False, f"Devi essere in {parent_name} per entrare qui."
+        #     return False, "Non puoi arrivarci da qui."
         
-        # Check connectivity
-        visible = self.get_visible_locations()
-        if target_id not in visible:
-            return False, "Non c'è connessione diretta. Prova un altro percorso."
+        # V4: Removed connectivity check - can go anywhere
+        # visible = self.get_visible_locations()
+        # if target_id not in visible:
+        #     return False, "Non c'è connessione diretta. Prova un altro percorso."
         
         # Check time availability
         if target.available_times:
@@ -235,10 +255,10 @@ class LocationManager:
             if not has_flag:
                 return False, "Non sai come arrivarci."
         
-        # Check companion
-        if check_companion and not target.companion_can_follow:
-            companion_name = self.game_state.active_companion
-            return False, f"{companion_name} non vuole entrare qui."
+        # V4: Removed companion blocking - companion will stay behind automatically
+        # if check_companion and not target.companion_can_follow:
+        #     companion_name = self.game_state.active_companion
+        #     return False, f"{companion_name} non vuole entrare qui."
         
         return True, "OK"
     
@@ -260,21 +280,25 @@ class LocationManager:
         Returns:
             Movement result
         """
-        # Validate
-        can_move, reason = self.can_move_to(target_id, check_companion=not force)
+        # V3.3: Check if companion can follow to this location
+        target = self.get_location(target_id)
+        companion_name = self.game_state.active_companion
+        companion_left_behind = False
+        companion_left_message = ""
+        
+        # Check if companion would refuse (but don't block movement)
+        if target and not target.companion_can_follow and not force:
+            if companion_name:
+                companion_left_behind = True
+                companion_left_message = target.companion_refuse_message or \
+                    f"{companion_name} rimane indietro."
+                print(f"[LocationManager] {companion_name} cannot follow to {target_id}")
+        
+        # Validate (without companion check if companion can't follow)
+        check_companion = not companion_left_behind and not force
+        can_move, reason = self.can_move_to(target_id, check_companion=check_companion)
         
         if not can_move:
-            # Check if companion would refuse
-            target = self.get_location(target_id)
-            if target and not target.companion_can_follow and not force:
-                companion_name = self.game_state.active_companion
-                return MovementResponse(
-                    success=False,
-                    block_reason="companion_refused",
-                    block_description=target.companion_refuse_message or 
-                        f"{companion_name} si rifiuta di entrare.",
-                )
-            
             return MovementResponse(
                 success=False,
                 block_reason="blocked",
@@ -295,6 +319,8 @@ class LocationManager:
             success=True,
             new_location=target_id,
             transition_text=transition,
+            companion_left_behind=companion_left_behind,
+            companion_left_message=companion_left_message,
         )
     
     def _generate_transition(self, target_id: str) -> str:

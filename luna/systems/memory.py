@@ -143,14 +143,24 @@ class SemanticMemoryStore:
             )
             
             self._available = True
+            # V4: Verify collection is working
+            try:
+                test_count = self._collection.count()
+                print(f"[SemanticMemory] ✅ Initialized for session {self.session_id}")
+                print(f"[SemanticMemory] 📊 Existing memories in collection: {test_count}")
+            except Exception as e:
+                print(f"[SemanticMemory] ⚠️ Warning: Could not verify collection: {e}")
+            
             logger.info(f"Semantic memory initialized for session {self.session_id}")
             return True
             
         except ImportError as e:
             logger.warning(f"Semantic memory dependencies not available: {e}")
+            print(f"[SemanticMemory] ❌ Dependencies not available: {e}")
             return False
         except Exception as e:
             logger.error(f"Failed to initialize semantic memory: {e}")
+            print(f"[SemanticMemory] ❌ Failed to initialize: {e}")
             return False
     
     @property
@@ -257,6 +267,7 @@ class MemoryManager:
         history_limit: int = 50,
         enable_semantic: bool = False,
         storage_path: Optional[Path] = None,
+        llm_manager = None,
     ) -> None:
         """Initialize memory manager.
         
@@ -266,11 +277,13 @@ class MemoryManager:
             history_limit: Max messages to keep in recent history
             enable_semantic: Enable semantic search (requires ChromaDB)
             storage_path: Path for vector storage (required if semantic enabled)
+            llm_manager: Optional LLM manager for intelligent summarization
         """
         self.db = db_manager
         self.session_id = session_id
         self.history_limit = history_limit
         self.enable_semantic = enable_semantic
+        self._llm_manager = llm_manager
         
         # Cache
         self._recent_messages: List[ConversationMessage] = []
@@ -343,6 +356,7 @@ class MemoryManager:
                         )
         
         self._loaded = True
+        print(f"[Memory] ✅ Loaded: {len(self._recent_messages)} messages, {len(self._facts)} facts, semantic={self.enable_semantic}")
         logger.info(
             f"Memory loaded: {len(self._recent_messages)} messages, "
             f"{len(self._facts)} facts, semantic={self.enable_semantic}"
@@ -387,9 +401,12 @@ class MemoryManager:
                 tags_en or [],
             )
         
+        # V4: Log message addition
+        print(f"[Memory] 📝 Added {role} message (turn {turn_number}): {content[:50]}...")
+        
         # Check if compression needed
         if len(self._recent_messages) > self.history_limit:
-            await self._compress_history()
+            await self._compress_history(self._llm_manager)
     
     async def add_fact(
         self,
@@ -447,6 +464,7 @@ class MemoryManager:
                 metadata=metadata
             )
         
+        print(f"[Memory] 💡 Added fact (importance={importance}): {content[:60]}...")
         logger.debug(f"Added fact (importance={importance}): {content[:50]}...")
     
     def get_recent_history(self, limit: Optional[int] = None) -> List[ConversationMessage]:
@@ -581,13 +599,20 @@ class MemoryManager:
         """
         lines = ["=== IMPORTANT MEMORY ==="]
         
+        # V4: Debug logging
+        print(f"[Memory] Query: '{query[:30]}...' | Semantic: {self.enable_semantic} | Total facts: {len(self._facts)}")
+        
         if query and (self.enable_semantic or len(self._facts) > 20):
             # Use search for targeted retrieval
             results = self.search_memories(query, k=max_facts, min_importance=min_importance)
             memories = [r.memory for r in results]
+            print(f"[Memory] Search returned {len(memories)} results")
+            for r in results[:3]:
+                print(f"  - [{r.match_type}] score={r.score:.2f}: {r.memory.content[:40]}...")
         else:
             # Fall back to importance-based selection
             memories = self.get_important_facts(min_importance, max_facts)
+            print(f"[Memory] Importance-based selection: {len(memories)} facts")
         
         if memories:
             for mem in memories:
@@ -603,39 +628,153 @@ class MemoryManager:
         
         return "\n".join(lines)
     
-    async def _compress_history(self) -> None:
-        """Compress old history into summary."""
-        if len(self._recent_messages) < self.history_limit + 10:
+    async def _compress_history(self, llm_manager=None) -> None:
+        """Compress old history into summary.
+        
+        V4: Now with optional LLM-based intelligent summarization.
+        
+        Args:
+            llm_manager: Optional LLM manager for intelligent summarization
+        """
+        # V4.1: Lowered threshold for faster compression
+        if len(self._recent_messages) < self.history_limit + 5:
             return
         
-        # Get oldest messages to compress
-        to_compress = self._recent_messages[:10]
+        # Get oldest messages to compress (5 instead of 10 for more aggressive compression)
+        to_compress = self._recent_messages[:5]
         
         # Create a meaningful summary
         start_turn = to_compress[0].turn_number
         end_turn = to_compress[-1].turn_number
         
-        # Extract key topics from messages
-        all_content = " ".join([m.content for m in to_compress])
-        keywords = self._keyword_extractor.extract(all_content)
-        key_topics = ", ".join(list(keywords)[:5]) if keywords else "general conversation"
+        # V4: Try LLM-based summary if available
+        summary_text = None
+        if llm_manager:
+            try:
+                summary_text = await self._generate_llm_summary(to_compress, llm_manager)
+                print(f"[Memory] 🤖 LLM summary generated: {summary_text[:60]}...")
+            except Exception as e:
+                print(f"[Memory] LLM summary failed, falling back to keywords: {e}")
         
-        summary_text = (
-            f"Summary of turns {start_turn}-{end_turn}: "
-            f"Discussed topics: {key_topics}. "
-            f"({len(to_compress)} messages)"
-        )
+        # Fallback to keyword-based summary
+        if not summary_text:
+            all_content = " ".join([m.content for m in to_compress])
+            keywords = self._keyword_extractor.extract(all_content)
+            key_topics = ", ".join(list(keywords)[:5]) if keywords else "general conversation"
+            
+            summary_text = (
+                f"Summary of turns {start_turn}-{end_turn}: "
+                f"Discussed topics: {key_topics}. "
+                f"({len(to_compress)} messages)"
+            )
         
-        # Add as summary memory
+        # Add as summary memory with higher importance
         async with self.db.session() as db_session:
-            await self.db.add_memory(
+            mem = await self.db.add_memory(
                 db_session,
                 self.session_id,
-                "summary",
+                "fact",  # V4.1 FIX: Changed from "summary" to "fact" for long-term memory
                 summary_text,
                 end_turn,
-                importance=3,
+                importance=6,  # V4: Higher importance for summaries
             )
+            
+            # V4.1 FIX: Add to facts list immediately for live use
+            fact = MemoryEntry(
+                id=mem.id,
+                type="fact",
+                content=summary_text,
+                turn_count=end_turn,
+                importance=6,
+            )
+            self._facts.append(fact)
+            
+            # Add to semantic store if available
+            if self._semantic_store and self._semantic_store.is_available and mem.id:
+                self._semantic_store.add_memory(
+                    memory_id=str(mem.id),
+                    content=summary_text,
+                    metadata={
+                        "turn": end_turn,
+                        "importance": 6,
+                        "type": "fact",
+                    }
+                )
+        
+        # V4.1 FIX: Actually remove compressed messages from memory!
+        self._recent_messages = self._recent_messages[len(to_compress):]
+        print(f"[Memory] 🗑️ Removed {len(to_compress)} compressed messages, {len(self._recent_messages)} remaining")
+        print(f"[Memory] 💡 Added summary fact: {summary_text[:60]}...")
+    
+    async def _generate_llm_summary(
+        self,
+        messages: List[ConversationMessage],
+        llm_manager,
+    ) -> Optional[str]:
+        """Generate intelligent summary using LLM.
+        
+        Args:
+            messages: Messages to summarize
+            llm_manager: LLM manager for generation
+            
+        Returns:
+            Summary text or None if failed
+        """
+        if not llm_manager:
+            return None
+        
+        # Build conversation text
+        conversation_lines = []
+        for msg in messages:
+            role = "Player" if msg.role == "user" else "NPC"
+            conversation_lines.append(f"{role}: {msg.content}")
+        
+        conversation_text = "\n".join(conversation_lines)
+        
+        # Create prompt for summary
+        prompt = f"""Summarize the following conversation in 1-2 sentences.
+Focus on:
+- What happened
+- Any decisions made
+- Any promises or threats
+- Relationship changes
+
+Keep it concise but include specific details that would be important to remember later.
+
+Conversation:
+{conversation_text}
+
+Summary:"""
+        
+        try:
+            # Call LLM
+            response = await llm_manager.generate_simple(
+                prompt=prompt,
+                max_tokens=100,
+                temperature=0.3,  # Low temperature for consistent summaries
+            )
+            
+            if response and response.strip():
+                # V4.1: Filter out error messages from LLM
+                error_phrases = [
+                    "errore di comunicazione",
+                    "error",
+                    "unable to",
+                    "cannot",
+                    "non posso",
+                    "mi dispiace",
+                    "mi scusi",
+                ]
+                response_lower = response.lower()
+                if any(phrase in response_lower for phrase in error_phrases):
+                    print(f"[Memory] LLM returned error message, using fallback: {response[:50]}...")
+                    return None
+                return response.strip()
+            
+            return None
+        except Exception as e:
+            print(f"[Memory] LLM summary generation error: {e}")
+            return None
         
         # Remove old messages from cache
         self._recent_messages = self._recent_messages[10:]

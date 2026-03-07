@@ -365,10 +365,16 @@ class WorldLoader:
                     if yaml_file.name == "npc_templates.yaml":
                         if "npc_templates" in file_data:
                             merged_data["npc_templates"].update(file_data["npc_templates"])
-                        if "fallback_female" in file_data:
-                            merged_data["npc_fallback_female"] = file_data["fallback_female"]
-                        if "fallback_male" in file_data:
-                            merged_data["npc_fallback_male"] = file_data["fallback_male"]
+                        # TODO: Fix YAML structure before enabling
+                        # if "fallback_female" in file_data:
+                        #     merged_data["npc_fallback_female"] = file_data["fallback_female"]
+                        # if "fallback_male" in file_data:
+                        #     merged_data["npc_fallback_male"] = file_data["fallback_male"]
+                    
+                    # V4.2: Merge Companion schedules (daily routines)
+                    if yaml_file.name == "companion_schedules.yaml":
+                        if "npc_schedules" in file_data:
+                            merged_data["npc_schedules"] = file_data["npc_schedules"]
                     
                     # Merge milestones from companion files
                     if "milestones" in file_data:
@@ -602,6 +608,13 @@ class WorldLoader:
             daily_events=data.get("daily_events", {}),
             player_character=player_character,
             story_beats=data.get("story_beats", {}),
+            # V4.1: NPC templates for consistent secondary characters
+            npc_templates=data.get("npc_templates", {}),
+            # V4.2: NPC daily schedules
+            npc_schedules=data.get("npc_schedules", {}),
+            # TODO: Fix YAML structure
+            # npc_fallback_female=data.get("npc_fallback_female", {}),
+            # npc_fallback_male=data.get("npc_fallback_male", {}),
         )
     
     def _process_companion(self, name: str, data: Dict[str, Any]) -> CompanionDefinition:

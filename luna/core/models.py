@@ -5,6 +5,7 @@ ensuring type safety and validation across the entire application.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from typing import Any, Dict, List, Literal, Optional, Set
@@ -312,11 +313,18 @@ class StateUpdate(LunaBaseModel):
     photo_requested: bool = Field(default=False, description="True if player requested a photo from remote NPC")
     photo_outfit: Optional[str] = Field(default=None, description="Outfit description for the requested photo")
     
-    @field_validator("affinity_change")
+    @field_validator("affinity_change", mode='before')
     @classmethod
-    def clamp_affinity_change(cls, v: Dict[str, int]) -> Dict[str, int]:
-        """Clamp affinity changes to -5/+5 range per turn."""
-        return {k: max(-5, min(5, val)) for k, val in v.items()}
+    def validate_affinity_change(cls, v):
+        """Validate and clamp affinity changes. Handles both dict and int (legacy)."""
+        # V4.1 FIX: Handle case where LLM sends int instead of dict
+        if isinstance(v, int):
+            print(f"[StateUpdate] WARNING: affinity_change is int ({v}), expected dict. Ignoring.")
+            return {}
+        if not isinstance(v, dict):
+            return {}
+        # Clamp values to -5/+5 range
+        return {k: max(-5, min(5, val)) for k, val in v.items() if isinstance(val, int)}
 
 
 class LLMResponse(LunaBaseModel):
@@ -832,6 +840,10 @@ class MovementResponse(LunaBaseModel):
     
     # Alternative suggestions
     alternatives: List[str] = Field(default_factory=list)
+    
+    # V3.3: Companion left behind (moved but companion couldn't follow)
+    companion_left_behind: bool = False
+    companion_left_message: str = ""
 
 
 class WardrobeDefinition(LunaBaseModel):
@@ -1037,8 +1049,12 @@ class WorldDefinition(LunaBaseModel):
     
     # NPC templates (secondary characters with defined visual identity)
     npc_templates: Dict[str, Any] = Field(default_factory=dict)
-    npc_fallback_female: Dict[str, str] = Field(default_factory=dict)
-    npc_fallback_male: Dict[str, str] = Field(default_factory=dict)
+    # TODO: Fix YAML structure before enabling these
+    # npc_fallback_female: Dict[str, Any] = Field(default_factory=dict)
+    # npc_fallback_male: Dict[str, Any] = Field(default_factory=dict)
+    
+    # V4.2: NPC daily schedules (optional, generic for any world)
+    npc_schedules: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     
     # Player character default stats
     player_character: Dict[str, Any] = Field(default_factory=dict)
@@ -1288,3 +1304,61 @@ class PersonalityAnalysisResponse(BaseModel):
         None,
         description="Spiegazione del ragionamento dell'analisi"
     )
+
+
+
+# =============================================================================
+# Turn Result
+# =============================================================================
+
+@dataclass
+class TurnResult:
+    """Result of a game turn."""
+    text: str  # Character/Narrator response
+    user_input: str = ""  # What the player said (for chat display)
+    image_path: Optional[str] = None
+    audio_path: Optional[str] = None
+    video_path: Optional[str] = None
+    
+    # Game state updates
+    affinity_changes: Dict[str, int] = field(default_factory=dict)
+    new_quests: List[str] = field(default_factory=list)
+    completed_quests: List[str] = field(default_factory=list)
+    
+    # Gameplay system results
+    gameplay_result: Optional[Any] = None
+    available_actions: List[Dict[str, Any]] = field(default_factory=list)
+    
+    # Global events
+    active_event: Optional[Dict[str, Any]] = None  # Current global event
+    new_event_started: bool = False  # True if event just started this turn
+    
+    # Movement info
+    new_location_id: Optional[str] = None  # Set when player moves to new location
+    
+    # Companion switch info
+    switched_companion: bool = False
+    previous_companion: Optional[str] = None
+    current_companion: Optional[str] = None
+    is_temporary_companion: bool = False  # True if current companion is a temporary NPC
+    
+    # Multi-NPC dialogue
+    multi_npc_sequence: Optional[Any] = None  # DialogueSequence if multi-NPC interaction
+    multi_npc_image_paths: Optional[List[str]] = None  # Image paths for each turn
+    secondary_characters: Optional[List[str]] = None  # For backward compatibility
+    
+    # Photo request (when player asks for photo from remote NPC)
+    is_photo: bool = False  # True if image is a photo requested by player
+    
+    # Dynamic events (random/daily)
+    dynamic_event: Optional[Dict[str, Any]] = None  # Current pending event with choices
+    
+    # Phase change (V4.2)
+    phase_change_result: Optional[Any] = None  # PhaseChangeResult if phase changed this turn
+    companion_left_due_to_phase: bool = False  # True if companion left due to phase change
+    needs_location_refresh: bool = False  # True if UI should refresh location image (solo mode)
+    
+    # Metadata
+    turn_number: int = 0
+    provider_used: str = ""
+    error: Optional[str] = None

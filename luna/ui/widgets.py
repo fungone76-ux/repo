@@ -547,6 +547,10 @@ class StoryLogWidget(QGroupBox):
         """Set story text."""
         self.lbl_story.setText(text)
         self.scroll_to_bottom()
+    
+    def clear(self) -> None:
+        """Clear story log."""
+        self.lbl_story.setText("")
 
 
 class ImageDisplayWidget(QGroupBox):
@@ -667,13 +671,13 @@ class OutfitWidget(QGroupBox):
 
 
 class LocationWidget(QGroupBox):
-    """Widget for displaying current location and visible exits."""
+    """Widget for displaying current location and characters present."""
     
     def __init__(self, parent=None) -> None:
         """Initialize location widget."""
         super().__init__("📍 Location", parent)
-        self.setMaximumHeight(180)
-        self.setMinimumHeight(140)
+        self.setMaximumHeight(200)
+        self.setMinimumHeight(160)
         
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -694,11 +698,11 @@ class LocationWidget(QGroupBox):
         self.lbl_state.setStyleSheet("color: #FFC107; font-size: 10px;")
         layout.addWidget(self.lbl_state)
         
-        # Visible locations
-        layout.addWidget(QLabel("<b>🚪 Puoi raggiungere:</b>"))
-        self.list_exits = QListWidget()
-        self.list_exits.setMaximumHeight(100)
-        self.list_exits.setStyleSheet("""
+        # V4: Characters present (instead of exits)
+        layout.addWidget(QLabel("<b>👥 Personaggi presenti:</b>"))
+        self.list_characters = QListWidget()
+        self.list_characters.setMaximumHeight(100)
+        self.list_characters.setStyleSheet("""
             QListWidget {
                 background-color: #2d2d2d;
                 border: 1px solid #444;
@@ -710,7 +714,7 @@ class LocationWidget(QGroupBox):
                 padding: 4px;
             }
         """)
-        layout.addWidget(self.list_exits)
+        layout.addWidget(self.list_characters)
         
         layout.addStretch()
     
@@ -719,7 +723,7 @@ class LocationWidget(QGroupBox):
         name: str,
         description: str,
         state: str = "",
-        exits: Optional[List[str]] = None,
+        characters: Optional[List[str]] = None,
     ) -> None:
         """Update location display.
         
@@ -727,7 +731,7 @@ class LocationWidget(QGroupBox):
             name: Location name
             description: Location description
             state: Optional state text
-            exits: List of visible exit names
+            characters: List of character names present (V4: replaces exits)
         """
         self.lbl_location.setText(name)
         self.lbl_description.setText(description)
@@ -737,19 +741,19 @@ class LocationWidget(QGroupBox):
         else:
             self.lbl_state.setText("")
         
-        self.list_exits.clear()
-        if exits:
-            for exit_name in exits:
-                self.list_exits.addItem(f"→ {exit_name}")
+        self.list_characters.clear()
+        if characters:
+            for char_name in characters:
+                self.list_characters.addItem(f"👤 {char_name}")
         else:
-            self.list_exits.addItem("(nessuna uscita visibile)")
+            self.list_characters.addItem("(nessuno presente)")
     
     def clear(self) -> None:
         """Clear location display."""
         self.lbl_location.setText("Unknown")
         self.lbl_description.setText("No location data")
         self.lbl_state.setText("")
-        self.list_exits.clear()
+        self.list_characters.clear()
 
 
 class PersonalityArchetypeWidget(QGroupBox):

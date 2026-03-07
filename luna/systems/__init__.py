@@ -9,6 +9,7 @@ from luna.systems.world import WorldLoader, get_world_loader
 from luna.systems.quests import QuestEngine
 from luna.systems.personality import PersonalityEngine, BehavioralUpdate
 from luna.systems.memory import MemoryManager
+from luna.systems.movement import MovementHandler, MovementResult
 
 __all__ = [
     "WorldLoader",
@@ -17,4 +18,6 @@ __all__ = [
     "PersonalityEngine",
     "BehavioralUpdate",
     "MemoryManager",
+    "MovementHandler",
+    "MovementResult",
 ]

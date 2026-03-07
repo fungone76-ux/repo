@@ -6,6 +6,7 @@ All operations are non-blocking - content appears when ready.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 from dataclasses import dataclass
@@ -76,6 +77,9 @@ class MediaPipeline:
         video_action: str = "posing",
         base_prompt: Optional[str] = None,
         secondary_characters: Optional[List[Dict[str, str]]] = None,
+        location_id: Optional[str] = None,
+        location_description: Optional[str] = None,
+        location_visual_style: Optional[str] = None,
     ) -> MediaResult:
         """Generate all media types asynchronously.
         
@@ -88,6 +92,9 @@ class MediaPipeline:
             video_action: Action for video generation
             base_prompt: Character base prompt from world YAML (SACRED for visual consistency)
             secondary_characters: Optional list of secondary characters with 'name' and 'base_prompt'
+            location_id: Current location ID (e.g., 'luna_home', 'school_classroom')
+            location_description: Visual description of location for image generation
+            location_visual_style: V4: Visual style of location (used when solo)
             
         Returns:
             Media result (paths may be None if async)
@@ -110,8 +117,16 @@ class MediaPipeline:
         tasks = []
         
         # Image (always, unless in debug mode checked above)
+        # V4.0: Inject location description into visual_en if provided
+        visual_en_with_location = self._inject_location_into_visual_en(
+            visual_en, location_id, location_description
+        )
+        
         image_task = asyncio.create_task(
-            self._generate_image_async(visual_en, tags, companion_name, outfit, base_prompt, secondary_characters)
+            self._generate_image_async(
+                visual_en_with_location, tags, companion_name, outfit, base_prompt, 
+                secondary_characters, location_visual_style
+            )
         )
         tasks.append(("image", image_task))
         
@@ -229,6 +244,65 @@ class MediaPipeline:
     # Private async methods
     # ========================================================================
     
+    def _inject_location_into_visual_en(
+        self,
+        visual_en: str,
+        location_id: Optional[str],
+        location_description: Optional[str],
+    ) -> str:
+        """Inject location description into visual_en to ensure correct background.
+        
+        V4.0 FIX: The LLM often ignores location instructions in the system prompt.
+        This forces the location into the visual description.
+        
+        Args:
+            visual_en: Original visual description from LLM
+            location_id: Location ID (e.g., 'luna_home')
+            location_description: Location visual_style (English) for SD prompt
+            
+        Returns:
+            Modified visual_en with location enforced
+        """
+        if not location_id:
+            return visual_en
+        
+        # Skip if visual_en already contains clear location indicators
+        visual_lower = visual_en.lower()
+        location_indicators = [
+            'classroom', 'bathroom', 'bedroom', 'kitchen', 'office',
+            'gym', 'library', 'corridor', 'home', 'house', 'school',
+            'room', 'apartment', 'studio', 'background', 'living room',
+            'dining room', 'hallway', 'entrance', 'garden', 'park',
+            'street', 'shop', 'store', 'restaurant', 'cafe', 'bar',
+            'hospital', 'clinic', 'police', 'station', 'bus', 'train',
+            'car', 'vehicle', 'beach', 'pool', 'mountain', 'forest',
+            'city', 'town', 'village', 'building', 'interior', 'exterior',
+        ]
+        
+        for indicator in location_indicators:
+            if indicator in visual_lower:
+                # Location already mentioned, trust the LLM
+                print(f"[MediaPipeline] Location already in visual_en: '{indicator}'")
+                return visual_en
+        
+        # No location found in visual_en, inject it
+        if location_description:
+            # Use provided visual_style (English)
+            location_text = location_description
+        else:
+            # Generate from location_id
+            location_text = location_id.replace('_', ' ')
+        
+        # Inject location at the end of visual_en
+        # Format: "...existing description..., in [location]"
+        injected = f"{visual_en.rstrip('. ')}, in {location_text}"
+        print(f"[MediaPipeline] INJECTED LOCATION: '{location_text}'")
+        print(f"[MediaPipeline]   Original: {visual_en[:60]}...")
+        print(f"[MediaPipeline]   Modified: {injected[:60]}...")
+        
+        print(f"[MediaPipeline] Location injection: '{location_id}' -> added to visual_en")
+        return injected
+    
     def _detect_generic_npc(self, visual_en: str, companion_name: str, base_prompt: str) -> bool:
         """Detect if the visual description is for a generic NPC, not the main character.
         
@@ -243,6 +317,13 @@ class MediaPipeline:
             True if this appears to be a generic NPC, not the main companion
         """
         if not visual_en or not base_prompt:
+            return False
+        
+        # V3.1 FIX: If base_prompt contains weighted tags (e.g., "(tag:1.1)"), 
+        # it's a custom-built prompt for a specific temporary NPC - DON'T override it with generic NPC_BASE
+        # Pattern matches (anything:1.x) where x can be a decimal
+        if re.search(r'\([^:]+:\d+\.?\d*\)', base_prompt):
+            print(f"[MediaPipeline] Custom weighted base_prompt detected, not treating as generic NPC")
             return False
         
         visual_lower = visual_en.lower()
@@ -294,6 +375,7 @@ class MediaPipeline:
         outfit: Optional[OutfitState] = None,
         base_prompt: Optional[str] = None,
         secondary_characters: Optional[List[Dict[str, str]]] = None,
+        location_visual_style: Optional[str] = None,
     ) -> Optional[str]:
         """Generate image asynchronously.
         
@@ -304,6 +386,7 @@ class MediaPipeline:
             outfit: Character outfit state
             base_prompt: Character base prompt from world YAML (SACRED)
             secondary_characters: Optional list of secondary characters for multi-character scenes
+            location_visual_style: V4: Visual style of location (used when solo)
             
         Returns:
             Path to generated image or None
@@ -332,14 +415,23 @@ class MediaPipeline:
             from luna.media.builders import ImagePromptBuilder
             
             prompt_builder = ImagePromptBuilder()
+            
+            # V4.1 SOLO MODE: If solo, use location_visual_style as the scene description
+            # (showing empty location without characters)
+            effective_visual = visual_en
+            if companion_name == "_solo_" and location_visual_style:
+                effective_visual = location_visual_style
+                print(f"[MediaPipeline] SOLO MODE: Using location visual style")
+            
             prompt = prompt_builder.build(
-                visual_description=visual_en,
+                visual_description=effective_visual,
                 tags=tags,
                 composition="medium_shot",
                 character_name=companion_name,
                 outfit=outfit,
                 base_prompt=effective_base_prompt,  # Use possibly modified base prompt
                 secondary_characters=secondary_characters,  # Multi-character support
+                location_visual_style=location_visual_style,  # V4: Pass for solo mode
             )
             
             # Generate image

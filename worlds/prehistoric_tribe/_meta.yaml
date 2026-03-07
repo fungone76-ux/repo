@@ -134,7 +134,7 @@ story_beats:
     # === PROVA 1: NAYA ===
     - id: "prova_selva"
       description: "La caccia alla tigre dai denti a sciabola con Naya"
-      trigger: "turn >= 3 AND location == 'giungla'"
+      trigger: "naya_affinity >= 20"
       required_elements: ["naya", "caccia", "bestia", "pericolo", "cooperazione"]
       tone: "action_suspense"
       once: true
@@ -143,7 +143,7 @@ story_beats:
     # === PROVA 2: KARA ===
     - id: "prova_spirito"
       description: "La notte nella caverna con le visioni di Kara"
-      trigger: "turn >= 10 AND flag:prova_selva_passata == true"
+      trigger: "kara_affinity >= 20"
       required_elements: ["kara", "visione", "caverna", "notte", "paura"]
       tone: "mystical_vision"
       once: true
@@ -152,7 +152,7 @@ story_beats:
     # === PROVA 3: ZARA ===
     - id: "prova_sangue"
       description: "La scelta tra tradimento e lealtà con Zara"
-      trigger: "turn >= 20 AND flag:prova_spirito_passata == true"
+      trigger: "zara_affinity >= 20"
       required_elements: ["zara", "tradimento", "lealtà", "scelta", "sacrificio"]
       tone: "dramatic_tension"
       once: true

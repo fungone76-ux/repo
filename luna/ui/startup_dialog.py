@@ -44,6 +44,9 @@ class StartupDialog(QDialog):
         self._setup_ui()
         self._load_worlds()
         self._load_settings()
+        
+        # Connect tab change to load saves when Load Game tab is selected
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
     def _setup_ui(self) -> None:
         """Setup UI components."""
@@ -156,10 +159,31 @@ class StartupDialog(QDialog):
         self.list_saves.itemDoubleClicked.connect(self._on_start)
         layout.addWidget(self.list_saves)
 
+        # Buttons row
+        btn_layout = QHBoxLayout()
+        
         btn_refresh = QPushButton("🔄 Refresh")
         btn_refresh.clicked.connect(self._load_saves)
-        layout.addWidget(btn_refresh)
-
+        btn_layout.addWidget(btn_refresh)
+        
+        btn_delete_all = QPushButton("🗑️ Elimina Tutti")
+        btn_delete_all.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                padding: 5px 15px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+        btn_delete_all.clicked.connect(self._delete_all_saves)
+        btn_layout.addWidget(btn_delete_all)
+        
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+        
         return tab
 
     def _create_settings_tab(self) -> QWidget:
@@ -282,6 +306,12 @@ class StartupDialog(QDialog):
             index = self.combo_worlds.findData(last_world)
             if index >= 0:
                 self.combo_worlds.setCurrentIndex(index)
+                # V4.1: After world selection triggers companion loading,
+                # select the last companion
+                if last_companion:
+                    comp_index = self.combo_companions.findData(last_companion)
+                    if comp_index >= 0:
+                        self.combo_companions.setCurrentIndex(comp_index)
         
         # Load execution mode from settings
         current_mode = "RUNPOD" if self.settings.is_runpod else "LOCAL"
@@ -292,11 +322,133 @@ class StartupDialog(QDialog):
         # Update video checkbox based on initial mode
         self._on_execution_mode_changed(self.combo_mode.currentText())
 
+    async def _load_saves_async(self) -> None:
+        """Load saved games from database (async version)."""
+        from luna.core.database import get_db_session, get_db_manager
+        
+        try:
+            async with get_db_session() as db:
+                db_manager = get_db_manager()
+                saves = await db_manager.list_saves(db)
+                
+                self.list_saves.clear()
+                
+                if not saves:
+                    item = QListWidgetItem("Nessun salvataggio trovato")
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                    self.list_saves.addItem(item)
+                    return
+                
+                for save in saves:
+                    session_id = save.get('session_id', 0)
+                    name = save.get('name') or f"Salvataggio {session_id}"
+                    companion = save.get('active_companion', 'unknown')
+                    location = save.get('current_location', 'unknown')
+                    turn_count = save.get('turn_count', 0)
+                    updated_at = save.get('updated_at', 'unknown')
+                    
+                    # Format display text
+                    display_text = f"📁 {name}\n"
+                    display_text += f"   👤 {companion} | 📍 {location} | 🎲 Turno {turn_count}\n"
+                    display_text += f"   🕐 {updated_at}"
+                    
+                    item = QListWidgetItem(display_text)
+                    item.setData(Qt.UserRole, session_id)
+                    self.list_saves.addItem(item)
+                    
+        except Exception as e:
+            print(f"[StartupDialog] Error loading saves: {e}")
+            self.list_saves.clear()
+            item = QListWidgetItem(f"Errore caricamento: {e}")
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.list_saves.addItem(item)
+    
+    def _on_tab_changed(self, index: int) -> None:
+        """Handle tab change.
+        
+        Args:
+            index: New tab index
+        """
+        if index == 1:  # Load Game tab
+            self._load_saves()
+    
     def _load_saves(self) -> None:
         """Load saved games from database."""
-        # TODO: Load from database
+        # Show loading message
         self.list_saves.clear()
-        self.list_saves.addItem("Feature coming soon...")
+        item = QListWidgetItem("⏳ Caricamento salvataggi...")
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self.list_saves.addItem(item)
+        
+        # Use QTimer to allow UI to update before async call
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(100, self._execute_load_saves)
+    
+    def _delete_all_saves(self) -> None:
+        """Delete all saves with confirmation."""
+        reply = QMessageBox.question(
+            self,
+            "⚠️ Conferma Eliminazione",
+            "Sei sicuro di voler eliminare TUTTI i salvataggi?\n\n"
+            f"Questa azione eliminerà tutti i dati di gioco salvati\n"
+            "e non può essere annullata!",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(100, self._execute_delete_all)
+    
+    def _execute_load_saves(self) -> None:
+        """Execute the async save loading."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._load_saves_async())
+            else:
+                loop.run_until_complete(self._load_saves_async())
+        except RuntimeError:
+            # No event loop
+            self.list_saves.clear()
+            item = QListWidgetItem("❌ Errore: event loop non disponibile")
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.list_saves.addItem(item)
+    
+    def _execute_delete_all(self) -> None:
+        """Execute delete all saves."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._delete_all_saves_async())
+            else:
+                loop.run_until_complete(self._delete_all_saves_async())
+        except RuntimeError:
+            QMessageBox.critical(self, "Errore", "Event loop non disponibile")
+    
+    async def _delete_all_saves_async(self) -> None:
+        """Async delete all saves."""
+        from luna.core.database import get_db_session, get_db_manager
+        
+        try:
+            async with get_db_session() as db:
+                db_manager = get_db_manager()
+                deleted_count = await db_manager.delete_all_saves(db)
+                
+                QMessageBox.information(
+                    self,
+                    "Completato",
+                    f"Eliminati {deleted_count} salvataggi.\n\n"
+                    "La lista verrà aggiornata."
+                )
+                
+                # Refresh the list
+                await self._load_saves_async()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Errore durante l'eliminazione: {e}")
 
     def _on_world_changed(self, index: int) -> None:
         """Handle world selection change."""
@@ -312,9 +464,21 @@ class StartupDialog(QDialog):
 
             # Update companions
             self.combo_companions.clear()
+            companion_count = 0
             for name, companion in world.companions.items():
+                # Skip temporary NPCs
+                if getattr(companion, 'is_temporary', False):
+                    continue
                 self.combo_companions.addItem(
                     f"{name} - {companion.role}", name
+                )
+                companion_count += 1
+            
+            # V4.1: Show message if no companions available
+            if companion_count == 0:
+                self.combo_companions.addItem("⚠️ Nessuna companion disponibile", None)
+                self.lbl_companion_desc.setText(
+                    "<span style='color: #ff6b6b;'>Questo mondo non ha companion principali definite.</span>"
                 )
 
     def _on_start(self) -> None:

@@ -20,11 +20,11 @@ import logging
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from luna.core.config import get_settings, get_user_prefs
 from luna.core.database import get_db_manager
-from luna.core.models import GameState, LLMResponse, MovementResponse, QuestInstance, QuestStatus, WorldDefinition
+from luna.core.models import GameState, LLMResponse, QuestInstance, QuestStatus, TimeOfDay, TurnResult, WorldDefinition
 from luna.core.prompt_builder import PromptBuilder
 from luna.core.state import StateManager
 from luna.core.story_director import StoryDirector
@@ -36,55 +36,20 @@ from luna.media.pipeline import MediaResult
 from luna.systems.personality import BehavioralUpdate, PersonalityEngine
 from luna.systems.memory import MemoryManager
 from luna.systems.location import LocationManager
+from luna.systems.movement import MovementHandler, MovementResult
+from luna.systems.intro import IntroGenerator
 from luna.systems.pose_extractor import get_pose_extractor, PoseExtractor
 from luna.systems.global_events import GlobalEventManager, GlobalEventInstance
 from luna.systems.multi_npc import MultiNPCManager
 from luna.systems.affinity_calculator import get_calculator
-
-
-@dataclass
-class TurnResult:
-    """Result of a game turn."""
-    text: str  # Character/Narrator response
-    user_input: str = ""  # What the player said (for chat display)
-    image_path: Optional[str] = None
-    audio_path: Optional[str] = None
-    video_path: Optional[str] = None
-    
-    # Game state updates
-    affinity_changes: Dict[str, int] = field(default_factory=dict)
-    new_quests: List[str] = field(default_factory=list)
-    completed_quests: List[str] = field(default_factory=list)
-    
-    # Gameplay system results
-    gameplay_result: Optional[Any] = None
-    available_actions: List[Dict[str, Any]] = field(default_factory=list)
-    
-    # Global events
-    active_event: Optional[Dict[str, Any]] = None  # Current global event
-    new_event_started: bool = False  # True if event just started this turn
-    
-    # Companion switch info
-    switched_companion: bool = False
-    previous_companion: Optional[str] = None
-    current_companion: Optional[str] = None
-    is_temporary_companion: bool = False  # True if current companion is a temporary NPC
-    
-    # Multi-NPC dialogue
-    multi_npc_sequence: Optional[Any] = None  # DialogueSequence if multi-NPC interaction
-    multi_npc_image_paths: Optional[List[str]] = None  # Image paths for each turn
-    secondary_characters: Optional[List[str]] = None  # For backward compatibility
-    
-    # Photo request (when player asks for photo from remote NPC)
-    is_photo: bool = False  # True if image is a photo requested by player
-    
-    # Dynamic events (random/daily)
-    dynamic_event: Optional[Dict[str, Any]] = None  # Current pending event with choices
-    
-    # Metadata
-    turn_number: int = 0
-    provider_used: str = ""
-    error: Optional[str] = None
+from luna.systems.state_memory import StateMemoryManager
+from luna.systems.npc_detector import NPCDetector
+from luna.systems.input_preprocessor import InputPreprocessor
+from luna.systems.response_processor import ResponseProcessor
+from luna.systems.state_updater import StateUpdater
+from luna.systems.media_coordinator import MediaCoordinator
+from luna.systems.turn_orchestrator import TurnOrchestrator
+from luna.core.debug_tracer import tracer, CheckStatus
 
 
 class GameEngine:
@@ -155,9 +120,43 @@ class GameEngine:
         # AI & Media
         self.prompt_builder = PromptBuilder(self.world)
         self.llm_manager = get_llm_manager()
+        
+        # Activity & Initiative Systems (NEW)
+        from luna.systems.activity_system import ActivitySystem
+        from luna.systems.initiative_system import InitiativeSystem
+        self.activity_system = ActivitySystem()
+        self.initiative_system = InitiativeSystem()
+        
+        # V4.3: NPC Detector (refactored from inline code)
+        self.npc_detector = NPCDetector(self.world)
         # Lazy import to avoid circular imports
         from luna.media.pipeline import MediaPipeline
-        self.media_pipeline = MediaPipeline()
+        
+        # V4.2: Check for --no-media flag
+        import os
+        self._no_media = os.environ.get("LUNA_DEBUG_NO_MEDIA") == "1"
+        if self._no_media:
+            print("[GameEngine] Media generation DISABLED (--no-media)")
+            self.media_pipeline = None  # Will skip media generation
+        else:
+            self.media_pipeline = MediaPipeline()
+        
+        # V4.3: New coordinator components (refactored from process_turn)
+        self.input_preprocessor = InputPreprocessor(self.world, self.state_manager)
+        self.response_processor = ResponseProcessor(max_retries=3)
+        # StateUpdater needs affinity calculator
+        from luna.systems.affinity_calculator import get_calculator
+        self.state_updater = StateUpdater(
+            state_manager=self.state_manager,
+            affinity_calculator=get_calculator(),
+            outfit_modifier=self.outfit_modifier,
+            quest_engine=self.quest_engine,
+            personality_engine=self.personality_engine,
+        )
+        self.media_coordinator = MediaCoordinator(
+            media_pipeline=self.media_pipeline,
+            enabled=not self._no_media,
+ )
         
         # Multi-NPC System (CONSERVATIVE - enabled but with strict rules)
         self.multi_npc_manager = MultiNPCManager(
@@ -169,6 +168,17 @@ class GameEngine:
         # State
         self._initialized = False
         self._session_id: Optional[int] = None
+        
+        # V4.1: Time Manager (auto-advance, rest commands, deadlines)
+        self.time_manager: Optional['TimeManager'] = None
+        self._pending_time_message: Optional[str] = None
+        self._pending_phase_message: Optional[str] = None  # V4.2
+        
+        # V4.1: Schedule Manager (NPC routines)
+        self.schedule_manager: Optional['ScheduleManager'] = None
+        
+        # V4.2: Phase Manager (8 turns per phase, freeze system)
+        self.phase_manager: Optional['PhaseManager'] = None
         
         # V3.2: NPC cache for consistent secondary characters
         # Maps template_id -> companion_name to ensure same NPC always appears
@@ -199,6 +209,32 @@ class GameEngine:
             )
             
             self._session_id = game_state.session_id
+            
+            # V4.1: Initialize Time Manager
+            from luna.systems.time_manager import TimeManager, TimeConfig
+            self.time_manager = TimeManager(
+                game_state=game_state,
+                config=TimeConfig(
+                    turns_per_period=5,  # Auto-advance every 5 turns
+                    enable_auto_advance=True,
+                    enable_rest_commands=True,
+                    enable_deadlines=True,
+                ),
+                on_time_change=self._on_time_change,
+            )
+            
+            # V4.1: Initialize Schedule Manager (NPC routines)
+            from luna.systems.schedule_manager import ScheduleManager
+            self.schedule_manager = ScheduleManager(game_state=game_state, world=self.world)
+            
+            # V4.2: Initialize Phase Manager (8 turns per phase)
+            from luna.systems.phase_manager import PhaseManager, PhaseConfig
+            self.phase_manager = PhaseManager(
+                game_state=game_state,
+                schedule_manager=self.schedule_manager,
+                config=PhaseConfig(turns_per_phase=8),  # 8 turni per fase
+                on_phase_change=self._on_phase_change,
+            )
             
             # Set starting location if not already set
             if game_state.current_location == "Unknown" and self.world.locations:
@@ -272,9 +308,25 @@ class GameEngine:
             self.state_manager,
         )
         
+        # Initialize movement handler (V4 refactor)
+        self.movement_handler = MovementHandler(
+            self.world,
+            self.location_manager,
+            self.state_manager.current,
+        )
+        
         # Initialize gameplay manager (lazy import to avoid circular imports)
         from luna.systems.gameplay_manager import GameplayManager
         self.gameplay_manager = GameplayManager(self.world)
+        
+        # Initialize intro generator (V4 refactor)
+        self.intro_generator = IntroGenerator(
+            self.world,
+            self.llm_manager,
+            self.media_pipeline,
+            self.memory_manager,
+            self.gameplay_manager,
+        )
         
         # Initialize global event manager
         self.event_manager = GlobalEventManager(self.world)
@@ -300,8 +352,21 @@ class GameEngine:
             history_limit=self.settings.memory_history_limit,
             enable_semantic=user_prefs.enable_semantic_memory,
             storage_path=self.settings.worlds_path.parent / "storage",
+            llm_manager=self.llm_manager,  # V4: Pass LLM for intelligent summarization
         )
         await self.memory_manager.load()
+        
+        # V4 Refactor: Initialize unified state-memory manager
+        self.state_memory = StateMemoryManager(
+            db=self.db,
+            session_id=self._session_id,
+            state_manager=self.state_manager,
+            memory_manager=self.memory_manager,
+            quest_engine=self.quest_engine,
+            event_manager=self.event_manager,
+            story_director=self.story_director,
+            personality_engine=self.personality_engine,
+        )
         
         self._initialized = True
         print(f"[GameEngine] Initialized session {self._session_id}")
@@ -370,19 +435,27 @@ class GameEngine:
         # Load personality states
         async with self.db.session() as db_session:
             session_model = await self.db.get_session(db_session, session_id)
+            print(f"[GameEngine] Loading personality state... Session model: {session_model is not None}")
+            if session_model:
+                print(f"[GameEngine] personality_state: {session_model.personality_state is not None}")
             if session_model and session_model.personality_state:
                 try:
                     from luna.systems.personality import PersonalityState
                     personality_data = session_model.personality_state
                     states_list = personality_data.get("states", [])
+                    print(f"[GameEngine] Loading {len(states_list)} personality states from DB")
                     personality_states = [
                         PersonalityState(**state_data) 
                         for state_data in states_list
                     ]
                     self.personality_engine.load_states(personality_states)
-                    print(f"[GameEngine] Loaded {len(personality_states)} personality states")
+                    print(f"[GameEngine] ✅ Loaded {len(personality_states)} personality states")
                 except Exception as e:
-                    print(f"[GameEngine] Error loading personality states: {e}")
+                    print(f"[GameEngine] ❌ Error loading personality states: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"[GameEngine] No personality state found, starting fresh")
         
         # Initialize NPC links
         self._init_npc_links()
@@ -394,6 +467,13 @@ class GameEngine:
         self.location_manager = LocationManager(
             self.world,
             self.state_manager,
+        )
+        
+        # Initialize movement handler (V4 refactor)
+        self.movement_handler = MovementHandler(
+            self.world,
+            self.location_manager,
+            self.state_manager.current,
         )
         
         # Initialize gameplay manager (lazy import to avoid circular imports)
@@ -449,6 +529,22 @@ class GameEngine:
         )
         await self.memory_manager.load()
         
+        # V4 Refactor: Initialize unified state-memory manager
+        self.state_memory = StateMemoryManager(
+            db=self.db,
+            session_id=self._session_id,
+            state_manager=self.state_manager,
+            memory_manager=self.memory_manager,
+            quest_engine=self.quest_engine,
+            event_manager=self.event_manager,
+            story_director=self.story_director,
+            personality_engine=self.personality_engine,
+        )
+        
+        # V4.3: Initialize TurnOrchestrator
+        from luna.systems.turn_orchestrator import TurnOrchestrator
+        self.turn_orchestrator = TurnOrchestrator(self)
+        
         self._initialized = True
         return True
     
@@ -458,6 +554,9 @@ class GameEngine:
     
     async def process_turn(self, user_input: str) -> TurnResult:
         """Process a single game turn (10 steps).
+        
+        V4.3 REFACTOR: Delegates to TurnOrchestrator while preserving
+        all original functionality.
         
         Args:
             user_input: Player's input text
@@ -480,7 +579,29 @@ class GameEngine:
         if not self._initialized:
             await self.initialize()
         
+        # V4.3: Delegate to TurnOrchestrator
+        return await self.turn_orchestrator.execute_turn(user_input)
+    
+    async def _process_turn_legacy(self, user_input: str) -> TurnResult:
+        """LEGACY: Original process_turn implementation (kept for reference).
+        
+        This method contains the original ~1000 line implementation.
+        All functionality has been migrated to TurnOrchestrator.
+        """
+        # Store for affinity calculation (Python-based, not LLM)
+        self._last_user_input = user_input
+        
+        if not self._initialized:
+            await self.initialize()
+        
         game_state = self.state_manager.current
+        
+        # V4.2 DEBUG: Start turn tracing
+        tracer.start_turn(game_state.turn_count, user_input)
+        
+        # Check critical: initialized
+        tracer.expect("engine_initialized", True)
+        tracer.actual("engine_initialized", self._initialized)
         
         # -------------------------------------------------------------------
         # STEP 0d: Check for Dynamic Event (Random/Daily)
@@ -510,16 +631,203 @@ class GameEngine:
             print("[GameEngine] WARNING: Gameplay manager not initialized!")
         
         # -------------------------------------------------------------------
-        # STEP 0a: Check for Movement Intent
+        # STEP 0a: Check for Movement Intent (V4: using MovementHandler)
         # -------------------------------------------------------------------
-        movement_result = self._check_and_handle_movement(user_input)
+        with tracer.step_context("Movement Detection", "movement"):
+            tracer.info(f"Input: '{user_input}'")
+            
+            # Check: pattern detection
+            tracer.expect("pattern_detected", True if any(v in user_input.lower() for v in ["vado", "esco", "entro", "torno"]) else None)
+            
+            print(f"[GameEngine] Checking movement intent for: '{user_input}'")
+            movement_result = await self.movement_handler.handle_movement(user_input)
+            
+            actual_detected = movement_result is not None
+            tracer.actual("pattern_detected", actual_detected, f"MovementHandler returned {movement_result}")
+            
+            if movement_result:
+                tracer.actual("movement_success", movement_result.success)
+                tracer.actual("target_location", movement_result.target_location_id)
+                tracer.actual("companion_left", movement_result.companion_left_behind)
+            
+            print(f"[GameEngine] Movement result: {movement_result}")
+            if movement_result is not None:
+                print(f"[GameEngine] Movement detected: success={movement_result.success}, target={movement_result.target_location_id}")
+            
         if movement_result:
-            # Movement was handled, return result
+            if not movement_result.success:
+                # Movement failed (blocked, invalid location, etc.)
+                return TurnResult(
+                    text=movement_result.error_message,
+                    user_input=user_input,  # V4.2 FIX: Include user input for chat display
+                    turn_number=game_state.turn_count,
+                    provider_used="system",
+                )
+            
+            # V4.1: Handle movement with companion left behind
+            print(f"[GameEngine] MOVEMENT DEBUG: companion_left_behind={movement_result.companion_left_behind}, active_companion={game_state.active_companion}")
+            if movement_result.companion_left_behind and game_state.active_companion:
+                print(f"[GameEngine] MOVEMENT DEBUG: Entering movement block")
+                try:
+                    old_companion = game_state.active_companion
+                    print(f"[GameEngine] MOVEMENT DEBUG: old_companion={old_companion}")
+                    solo_name = self._ensure_solo_companion()
+                    print(f"[GameEngine] MOVEMENT DEBUG: solo_name={solo_name}")
+                    self.state_manager.switch_companion(solo_name)
+                    self.companion = solo_name
+                    print(f"[GameEngine] Movement left {old_companion} behind, switching to solo")
+                    
+                    # Build combined message
+                    transition_text = movement_result.transition_text or ""
+                    left_message = movement_result.companion_message or f"{old_companion} rimane indietro."
+                    combined_text = f"{transition_text}\n\n{left_message}"
+                    
+                    # V4.1: Save user message to memory (BUG FIX - was missing!)
+                    await self.state_memory.add_message(
+                        role="user",
+                        content=user_input,
+                        turn_number=game_state.turn_count,
+                    )
+                    
+                    # V4.1: Save state BEFORE generating image (so location is persisted)
+                    await self.state_memory.save_all()
+                    
+                    # V4.1 FIX: Advance turn count
+                    self.state_manager.advance_turn()
+                    
+                    # V4.2 FIX: Call phase manager to increment turns_in_phase
+                    if self.phase_manager:
+                        self.phase_manager.on_turn_end()
+                    
+                    # V4.1: Generate image for new location (solo mode - empty location)
+                    image_path = None
+                    if movement_result.target_location_id:
+                        img_params = self.movement_handler.get_solo_mode_image_params(
+                            movement_result.target_location_id
+                        )
+                        if img_params:
+                            if self._no_media:
+                                # V4.2: Log prompt even when media disabled
+                                with tracer.step_context("Movement Solo Mode Prompt", "media"):
+                                    tracer.info(f"Solo mode movement to: {movement_result.target_location_id}")
+                                    tracer.info(f"Visual EN: {img_params.get('visual_en', 'N/A')}")
+                                    tracer.info(f"Location style: {img_params.get('location_visual_style', 'N/A')}")
+                                    print(f"\n{'='*60}")
+                                    print("🖼️  SOLO MODE PROMPT (Media Disabled):")
+                                    print(f"{'='*60}")
+                                    print(f"Location: {movement_result.target_location_id}")
+                                    print(f"Visual: {img_params.get('visual_en', 'N/A')}")
+                                    print(f"{'='*60}\n")
+                            elif self.media_pipeline:
+                                print(f"[GameEngine] Generating solo mode image for {movement_result.target_location_id}")
+                                try:
+                                    media_result = await self.media_pipeline.generate_all(
+                                        text=combined_text,
+                                        visual_en=img_params["visual_en"],
+                                        tags=img_params["tags"],
+                                        companion_name="_solo_",  # No character
+                                        base_prompt="",  # No LoRAs
+                                        location_id=movement_result.target_location_id,
+                                        location_visual_style=img_params["location_visual_style"],
+                                    )
+                                    image_path = media_result.image_path if media_result else None
+                                    print(f"[GameEngine] Solo mode image: {image_path}")
+                                except Exception as e:
+                                    print(f"[GameEngine] Failed to generate solo image: {e}")
+                            else:
+                                tracer.warning("No media pipeline for solo mode image")
+                    
+                    # V4.1: Schedule-based auto-switch (who's at this location?)
+                    switched_from_schedule = False
+                    schedule_companion = None
+                    if self.schedule_manager:
+                        tracer.info("Checking schedule for NPCs in new location")
+                        schedule_companion = self.schedule_manager.get_primary_npc(
+                            movement_result.target_location_id
+                        )
+                        
+                        tracer.expect("schedule_companion_found", True)  # Ci aspettiamo di trovare qualcuno
+                        tracer.actual("schedule_companion_found", schedule_companion is not None, 
+                                     f"Found: {schedule_companion}")
+                        
+                        if schedule_companion and schedule_companion != solo_name:
+                            # Found someone here! Switch from solo to them
+                            print(f"[Schedule] Auto-switch on arrival: solo -> {schedule_companion}")
+                            tracer.check("auto_switch_executed", True, True, CheckStatus.PASS,
+                                        f"Switched to {schedule_companion}")
+                            self.state_manager.switch_companion(schedule_companion)
+                            self.companion = schedule_companion
+                            solo_name = schedule_companion  # Update for result
+                            switched_from_schedule = True
+                            # Add to text
+                            schedule_context = self.schedule_manager.build_schedule_context(schedule_companion)
+                            combined_text += f"\n\n[Trovi {schedule_companion} qui. {schedule_context.split(chr(10))[2]}]"
+                        elif schedule_companion is None:
+                            tracer.check("auto_switch_executed", True, False, CheckStatus.FAIL,
+                                        "No NPC found in location according to schedule!")
+                        else:
+                            tracer.info(f"Schedule companion is same as solo: {schedule_companion}")
+                    
+                    # Get available actions for new location (BUG FIX - was missing!)
+                    available_actions = []
+                    if self.gameplay_manager:
+                        actions = self.gameplay_manager.get_available_actions(game_state)
+                        available_actions = [a.to_dict() for a in actions]
+                    
+                    return TurnResult(
+                        text=combined_text,
+                        user_input=user_input,  # V4.2 FIX: Include user input for chat display
+                        turn_number=game_state.turn_count,
+                        provider_used="system",
+                        new_location_id=movement_result.target_location_id,  # Force UI update
+                        switched_companion=True or switched_from_schedule,
+                        previous_companion=old_companion,
+                        current_companion=solo_name,
+                        image_path=image_path,
+                        available_actions=available_actions,
+                    )
+                except Exception as e:
+                    print(f"[GameEngine] ERROR in movement handling: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Fall through to normal processing
+                print(f"[GameEngine] MOVEMENT DEBUG: After try/except block")
+            else:
+                print(f"[GameEngine] MOVEMENT DEBUG: Skipped movement block (conditions not met)")
+            
+            # Normal movement (no companion or companion followed - rare in V4)
+            print(f"[GameEngine] MOVEMENT DEBUG: Entering NORMAL movement block")
+            # Still save state and message
+            await self.state_memory.add_message(
+                role="user",
+                content=user_input,
+                turn_number=game_state.turn_count,
+            )
+            await self.state_memory.save_all()
+            
+            # V4.1 FIX: Advance turn count
+            self.state_manager.advance_turn()
+            
+            # V4.2 FIX: Call phase manager to increment turns_in_phase
+            if self.phase_manager:
+                self.phase_manager.on_turn_end()
+            
+            # Get available actions for new location (BUG FIX - was missing!)
+            available_actions = []
+            if self.gameplay_manager:
+                actions = self.gameplay_manager.get_available_actions(game_state)
+                available_actions = [a.to_dict() for a in actions]
+            
             return TurnResult(
-                text=movement_result.transition_text or movement_result.block_description,
+                text=movement_result.transition_text or "Ti muovi verso la nuova location.",
+                user_input=user_input,  # V4.2 FIX: Include user input for chat display
                 turn_number=game_state.turn_count,
                 provider_used="system",
+                new_location_id=movement_result.target_location_id,  # Force UI update
+                available_actions=available_actions,
             )
+        else:
+            print(f"[GameEngine] No movement detected, proceeding to normal LLM processing")
         
         # -------------------------------------------------------------------
         # STEP 0b: Check for Farewell (player leaving companion)
@@ -537,31 +845,86 @@ class GameEngine:
                 switched_companion = True
                 self.companion = solo_name
                 print(f"[GameEngine] Farewell detected: {old_companion} -> solo mode")
+            
+            # Save user message to memory (BUG FIX - was missing!)
+            await self.state_memory.add_message(
+                role="user",
+                content=user_input,
+                turn_number=game_state.turn_count,
+            )
+            await self.state_memory.save_all()
+            
+            # V4.1 FIX: Advance turn count
+            self.state_manager.advance_turn()
+            
+            # V4.2 FIX: Call phase manager to increment turns_in_phase
+            if self.phase_manager:
+                self.phase_manager.on_turn_end()
+            
             return TurnResult(
                 text=f"Hai salutato {old_companion}. Ora sei da solo.",
+                user_input=user_input,  # V4.2 FIX: Include user input for chat update
                 turn_number=game_state.turn_count,
                 provider_used="system",
                 switched_companion=True,
                 previous_companion=old_companion,
                 current_companion=solo_name,
+                new_location_id=game_state.current_location,  # V4 FIX: Current location for UI update
             )
         
         # -------------------------------------------------------------------
-        # STEP 0c: Auto-switch Companion based on user input
+        # STEP 0c: Check for Rest/Sleep command (Time Manager Phase 2)
         # -------------------------------------------------------------------
-        mentioned_companion = self._detect_companion_in_input(user_input)
+        rest_message = None
+        if self.time_manager:
+            rest_message = self.time_manager.check_rest_command(user_input)
+            if rest_message:
+                print(f"[GameEngine] Rest command detected: {rest_message}")
+        
+        # -------------------------------------------------------------------
+        # STEP 0c2: Check for Freeze/Unfreeze commands (V4.2)
+        # -------------------------------------------------------------------
+        freeze_result = self._check_freeze_command(user_input)
+        if freeze_result:
+            return TurnResult(
+                text=freeze_result,
+                user_input=user_input,  # V4.2 FIX: Include user input for chat display
+                turn_number=game_state.turn_count,
+                provider_used="system",
+            )
+        
+        # -------------------------------------------------------------------
+        # STEP 0d: Check for Schedule query ("dove è Luna?", "routine di Stella")
+        # -------------------------------------------------------------------
+        schedule_query = self._check_schedule_query(user_input)
+        if schedule_query:
+            npc_name, location, activity = schedule_query
+            return TurnResult(
+                text=f"📍 {npc_name} è a {location}. {activity}",
+                user_input=user_input,  # V4.2 FIX: Include user input for chat display
+                turn_number=game_state.turn_count,
+                provider_used="system",
+            )
+        
+        # -------------------------------------------------------------------
+        # STEP 0e: Auto-switch Companion based on user input
+        # V4.3: Using refactored NPCDetector
+        # -------------------------------------------------------------------
+        mentioned_companion = self.npc_detector.detect_companion_in_input(user_input)
+        print(f"[GameEngine] Mentioned companion detection: '{mentioned_companion}'")
         
         if mentioned_companion and mentioned_companion != game_state.active_companion:
             # Switch to the mentioned companion
             success = self.state_manager.switch_companion(mentioned_companion)
             if success:
                 switched_companion = True
-                self.companion = mentioned_companion  # Update engine's current companion
+                self.companion = mentioned_companion
                 print(f"[GameEngine] Auto-switched companion: {old_companion} -> {mentioned_companion}")
         
         # Check for generic NPC interaction if no known companion mentioned
         elif not mentioned_companion:
-            generic_npc = self._detect_generic_npc_interaction(user_input)
+            generic_npc = self.npc_detector.detect_generic_npc_interaction(user_input)
+            print(f"[GameEngine] Generic NPC detection result: {generic_npc}")
             if generic_npc:
                 # Create temporary companion for this NPC
                 temp_name = self._create_temporary_companion(generic_npc)
@@ -692,13 +1055,12 @@ class GameEngine:
         # STEP 4: Build System Prompt
         # -------------------------------------------------------------------
         # Get memory context if available (with query for semantic search)
-        memory_context = ""
-        if self.memory_manager:
-            memory_context = self.memory_manager.get_memory_context(
-                query=user_input,  # Use user input for targeted retrieval
-                max_facts=self.settings.memory_max_context_facts,
-                min_importance=self.settings.memory_min_importance,
-            )
+        # V4 Refactor: Get memory context via unified manager
+        memory_context = self.state_memory.get_memory_context(
+            query=user_input,
+            max_facts=self.settings.memory_max_context_facts,
+            min_importance=self.settings.memory_min_importance,
+        )
         
         # Add Multi-NPC context if sequence detected
         multi_npc_context = ""
@@ -719,6 +1081,15 @@ class GameEngine:
             if forced_poses:
                 print(f"[GameEngine] Forced poses detected: {forced_poses}")
         
+        # Update activity system for active companion (NEW)
+        if self.activity_system:
+            time_str = game_state.time_of_day.value if hasattr(game_state.time_of_day, 'value') else str(game_state.time_of_day)
+            self.activity_system.update_activity(
+                npc_name=game_state.active_companion,
+                time_of_day=time_str,
+                current_turn=game_state.turn_count
+            )
+        
         system_prompt = self.prompt_builder.build_system_prompt(
             game_state=game_state,
             personality_engine=self.personality_engine,
@@ -731,20 +1102,29 @@ class GameEngine:
             switched_from=old_companion if switched_companion else None,
             is_temporary=is_temporary,
             forced_poses=forced_poses,
+            activity_system=self.activity_system,
+            initiative_system=self.initiative_system,
         )
+        
+        # V4.1: Add schedule context for active companion
+        if self.schedule_manager:
+            schedule_context = self.schedule_manager.build_schedule_context(
+                game_state.active_companion
+            )
+            if schedule_context:
+                system_prompt += f"\n\n=== CURRENT SITUATION ===\n{schedule_context}\n"
         
         # -------------------------------------------------------------------
         # STEP 5: LLM Generation
         # -------------------------------------------------------------------
-        # Build history from memory
+        # Build history from memory (V4 Refactor: Unified manager)
         history = []
-        if self.memory_manager:
-            recent_msgs = self.memory_manager.get_recent_history(limit=20)
-            for msg in recent_msgs:
-                history.append({
-                    "role": msg.role,
-                    "content": msg.content,
-                })
+        recent_msgs = self.state_memory.get_recent_history(limit=20)
+        for msg in recent_msgs:
+            history.append({
+                "role": msg.role,
+                "content": msg.content,
+            })
         
         # -------------------------------------------------------------------
         # STEP 5: LLM Generation with Guardrails
@@ -777,7 +1157,8 @@ class GameEngine:
                         
                         if current_retry < max_retries:
                             # Add correction prompt and retry
-                            correction = guard_err.get_retry_prompt(guard_err)
+                            from luna.ai.guardrails import ResponseGuardrails
+                            correction = ResponseGuardrails.get_retry_prompt(guard_err)
                             system_prompt += correction
                             print(f"[Guardrails] Retrying with correction...")
                         else:
@@ -806,31 +1187,34 @@ class GameEngine:
                 turn_number=game_state.turn_count,
             )
         
-        # Save user message to memory
-        if self.memory_manager:
-            await self.memory_manager.add_message(
-                role="user",
-                content=user_input,
-                turn_number=game_state.turn_count,
+        # Save messages to memory (V4 Refactor: Unified state-memory manager)
+        await self.state_memory.add_message(
+            role="user",
+            content=user_input,
+            turn_number=game_state.turn_count,
+        )
+        
+        await self.state_memory.add_message(
+            role="assistant",
+            content=llm_response.text,
+            turn_number=game_state.turn_count,
+            visual_en=llm_response.visual_en,
+            tags_en=llm_response.tags_en,
+        )
+        
+        # V4.2: Auto-freeze turns during important scenes
+        if self.phase_manager:
+            auto_frozen = self.phase_manager.auto_freeze_if_needed(user_input, llm_response.text)
+            if auto_frozen:
+                print(f"[GameEngine] Auto-frozen turns: {self.phase_manager._freeze_reason}")
+        
+        # Save any new fact from response
+        if llm_response.updates and llm_response.updates.new_fact:
+            await self.state_memory.add_fact(
+                text=llm_response.updates.new_fact,
+                importance=7,  # High importance for explicit facts
+                source=game_state.active_companion,
             )
-            
-            # Save assistant response to memory
-            await self.memory_manager.add_message(
-                role="assistant",
-                content=llm_response.text,
-                turn_number=game_state.turn_count,
-                visual_en=llm_response.visual_en,
-                tags_en=llm_response.tags_en,
-            )
-            
-            # Save any new fact from response
-            if llm_response.updates and llm_response.updates.new_fact:
-                await self.memory_manager.add_fact(
-                    content=llm_response.updates.new_fact,
-                    turn_number=game_state.turn_count,
-                    importance=7,  # High importance for explicit facts
-                    associated_npc=game_state.active_companion,
-                )
         
         # -------------------------------------------------------------------
         # STEP 6: Validate & Parse Response
@@ -854,6 +1238,45 @@ class GameEngine:
         
         # Advance turn
         self.state_manager.advance_turn()
+        
+        # -------------------------------------------------------------------
+        # STEP 7a: Phase Manager (V4.2 - 8 turns per phase)
+        # -------------------------------------------------------------------
+        with tracer.step_context("Phase Manager", "phase"):
+            phase_result = None
+            if self.phase_manager:
+                turns_before = self.phase_manager._turns_in_phase
+                tracer.expect("turns_incremented", turns_before + 1)
+                
+                phase_result = self.phase_manager.on_turn_end()
+                
+                turns_after = self.phase_manager._turns_in_phase
+                tracer.actual("turns_incremented", turns_after)
+                tracer.actual("is_frozen", self.phase_manager.is_frozen)
+                
+                if phase_result:
+                    tracer.check("phase_changed", True, True, CheckStatus.PASS,
+                               f"{phase_result.old_time} -> {phase_result.new_time}")
+                    if self.time_manager:
+                        self.time_manager._turns_since_last_advance = 0
+                else:
+                    tracer.info(f"No phase change yet (turn {turns_after}/8)")
+            else:
+                tracer.critical_alert("PhaseManager Missing", "phase_manager is None!")
+                tracer.actual("phase_manager_exists", False)
+        
+        # -------------------------------------------------------------------
+        # STEP 7b: Time Manager (Deadlines only - PhaseManager gestisce il tempo)
+        # -------------------------------------------------------------------
+        time_messages = []
+        if self.time_manager:
+            # V4.2: PhaseManager gestisce l'avanzamento del tempo (8 turni/fase)
+            # TimeManager si occupa solo delle deadline delle quest
+            # Non chiamare on_turn_end() qui per evitare conflitti
+            
+            # Check deadlines (ALWAYS check)
+            deadline_messages = self.time_manager.check_deadlines()
+            time_messages.extend(deadline_messages)
         
         # -------------------------------------------------------------------
         # STEP 7b: Check Global Events
@@ -895,39 +1318,48 @@ class GameEngine:
             # Multi-NPC: Generate sequence of images sequentially
             print(f"[GameEngine] Generating Multi-NPC image sequence...")
             
-            # Prepare turn data for image generation
-            sequence_turns = []
-            for turn in multi_npc_sequence.turns:
-                # Skip player turns
-                speaker_type_val = turn.speaker_type.value if hasattr(turn.speaker_type, 'value') else str(turn.speaker_type)
-                if speaker_type_val == "PLAYER":
-                    continue
+            # V4.2: Check if media pipeline available
+            if self._no_media:
+                print("[GameEngine] Multi-NPC: Media disabled - skipping image generation")
+                with tracer.step_context("Multi-NPC Media", "media"):
+                    tracer.info("Multi-NPC sequence skipped (media disabled)")
+                    tracer.info(f"Would generate {len(multi_npc_sequence.turns)} images")
+            elif not self.media_pipeline:
+                print("[GameEngine] Multi-NPC: No media pipeline available!")
+            else:
+                # Prepare turn data for image generation
+                sequence_turns = []
+                for turn in multi_npc_sequence.turns:
+                    # Skip player turns
+                    speaker_type_val = turn.speaker_type.value if hasattr(turn.speaker_type, 'value') else str(turn.speaker_type)
+                    if speaker_type_val == "PLAYER":
+                        continue
+                        
+                    # Build character list for this turn
+                    characters = self.multi_npc_manager.prepare_characters_for_builder(
+                        turn,
+                        present_npcs + [game_state.active_companion],
+                        {name: game_state.get_outfit(name) for name in present_npcs + [game_state.active_companion]}
+                    )
                     
-                # Build character list for this turn
-                characters = self.multi_npc_manager.prepare_characters_for_builder(
-                    turn,
-                    present_npcs + [game_state.active_companion],
-                    {name: game_state.get_outfit(name) for name in present_npcs + [game_state.active_companion]}
+                    # Get base prompt for primary speaker
+                    speaker_def = self.world.companions.get(turn.speaker)
+                    base_prompt = speaker_def.base_prompt if speaker_def else None
+                    
+                    sequence_turns.append({
+                        "visual_en": turn.visual_en or llm_response.visual_en,
+                        "tags": turn.tags_en or llm_response.tags_en,
+                        "characters": characters,
+                        "companion_name": turn.speaker,
+                        "base_prompt": base_prompt,
+                        "outfit": game_state.get_outfit(turn.speaker),
+                    })
+                
+                # Generate images sequentially
+                multi_npc_image_paths = await self.media_pipeline.generate_multi_npc_sequence(
+                    sequence_turns,
+                    on_image_ready=None,  # Callback handled by UI
                 )
-                
-                # Get base prompt for primary speaker
-                speaker_def = self.world.companions.get(turn.speaker)
-                base_prompt = speaker_def.base_prompt if speaker_def else None
-                
-                sequence_turns.append({
-                    "visual_en": turn.visual_en or llm_response.visual_en,
-                    "tags": turn.tags_en or llm_response.tags_en,
-                    "characters": characters,
-                    "companion_name": turn.speaker,
-                    "base_prompt": base_prompt,
-                    "outfit": game_state.get_outfit(turn.speaker),
-                })
-            
-            # Generate images sequentially
-            multi_npc_image_paths = await self.media_pipeline.generate_multi_npc_sequence(
-                sequence_turns,
-                on_image_ready=None,  # Callback handled by UI
-            )
             
             # Create media result with first image
             first_image = multi_npc_image_paths[0] if multi_npc_image_paths else None
@@ -968,6 +1400,11 @@ class GameEngine:
             # Get base prompt for active companion (SACRED for visual consistency)
             base_prompt = active_companion_def.base_prompt if active_companion_def else None
             
+            # DEBUG: Track base prompt changes
+            if active_companion_def:
+                bp_preview = base_prompt[:60] if base_prompt else "NONE"
+                print(f"[BasePrompt DEBUG] {game_state.active_companion}: {bp_preview}...")
+            
             # Build secondary characters list for multi-character scenes
             secondary_characters = None
             if llm_response.secondary_characters:
@@ -984,69 +1421,85 @@ class GameEngine:
                     print(f"[GameEngine] Multi-character scene: {game_state.active_companion} + "
                           f"{[c['name'] for c in secondary_characters]}")
             
-            media_task = asyncio.create_task(
-                self.media_pipeline.generate_all(
-                    text=llm_response.text,
-                    visual_en=llm_response.visual_en,
-                    tags=llm_response.tags_en,
-                    companion_name=game_state.active_companion,
-                    outfit=outfit,
-                    base_prompt=base_prompt,  # SACRED: Use companion's base prompt from world YAML
-                    secondary_characters=secondary_characters,  # Multi-character support
-                )
-            )
+            # V4.0: Get location description for image generation
+            location_id = game_state.current_location
+            location_desc = None
+            if location_id and self.world:
+                loc_def = self.world.locations.get(location_id)
+                if loc_def:
+                    # Use visual_style (English) for SD prompt, fallback to name
+                    location_desc = loc_def.visual_style if loc_def.visual_style else loc_def.name
+                    print(f"[GameEngine] Image location: {location_id} ({location_desc})")
             
-            # For now, wait for completion (UI can be made truly async later)
-            media_result = await media_task
+            # V4.2: Log prompt parameters even if media is disabled
+            if self._no_media:
+                with tracer.step_context("Media Prompt", "media"):
+                    tracer.info("Media generation disabled - logging prompt that would be sent")
+                    tracer.info(f"Companion: {game_state.active_companion}")
+                    tracer.info(f"Outfit: {outfit}")
+                    tracer.info(f"Base prompt: {base_prompt[:80] if base_prompt else 'None'}...")
+                    tracer.info(f"Visual EN: {llm_response.visual_en}")
+                    tracer.info(f"Tags: {llm_response.tags_en}")
+                    tracer.info(f"Location: {location_id} - {location_desc}")
+                    tracer.info(f"Secondary chars: {[c['name'] for c in secondary_characters] if secondary_characters else 'None'}")
+                    
+                    # Try to build the actual prompt that would be sent
+                    try:
+                        from luna.media.builders import ImagePromptBuilder
+                        builder = ImagePromptBuilder()
+                        prompt_data = builder.build(
+                            visual_en=llm_response.visual_en,
+                            tags=llm_response.tags_en,
+                            companion_name=game_state.active_companion,
+                            outfit=outfit,
+                            base_prompt=base_prompt,
+                            location_id=location_id,
+                            location_visual_style=location_desc,
+                        )
+                        tracer.info(f"\n{'='*60}")
+                        tracer.info("FULL PROMPT THAT WOULD BE SENT TO COMFYUI:")
+                        tracer.info(f"{'='*60}")
+                        tracer.info(prompt_data.get("positive", "N/A"))
+                        tracer.info(f"{'='*60}\n")
+                        print(f"\n{'='*60}")
+                        print("🖼️  MEDIA DISABLED - PROMPT PREVIEW:")
+                        print(f"{'='*60}")
+                        print(f"Character: {game_state.active_companion}")
+                        print(f"Location: {location_id}")
+                        print(f"Prompt: {prompt_data.get('positive', 'N/A')[:200]}...")
+                        print(f"{'='*60}\n")
+                    except Exception as e:
+                        tracer.warning(f"Could not build prompt preview: {e}")
+                    
+                    # Create a dummy result
+                    media_result = None
+            elif self.media_pipeline:
+                media_task = asyncio.create_task(
+                    self.media_pipeline.generate_all(
+                        text=llm_response.text,
+                        visual_en=llm_response.visual_en,
+                        tags=llm_response.tags_en,
+                        companion_name=game_state.active_companion,
+                        outfit=outfit,
+                        base_prompt=base_prompt,  # SACRED: Use companion's base prompt from world YAML
+                        secondary_characters=secondary_characters,  # Multi-character support
+                        location_id=location_id,  # V4.0: Pass location for visual enforcement
+                        location_description=location_desc,
+                        location_visual_style=location_desc,  # V4.1: Pass for solo mode
+                    )
+                )
+                
+                # For now, wait for completion (UI can be made truly async later)
+                media_result = await media_task
+            else:
+                # No media pipeline available (shouldn't happen normally)
+                tracer.warning("No media pipeline available!")
+                media_result = None
         
         # -------------------------------------------------------------------
-        # STEP 9: Save State
+        # STEP 9: Save State (V4 Refactor: Unified state-memory manager)
         # -------------------------------------------------------------------
-        async with self.db.session() as db_session:
-            await self.state_manager.save(db_session)
-            
-            # Save quest states
-            for quest_state in self.quest_engine.get_all_states():
-                await self.db.save_quest_state(
-                    db_session,
-                    self._session_id,
-                    quest_state.quest_id,
-                    quest_state.status.value,
-                    quest_state.current_stage_id,
-                )
-            
-            # Save global event states
-            if self.event_manager:
-                event_states_data = list(self.event_manager.to_dict()["active_events"].values())
-                await self.db.save_global_event_states(
-                    db_session,
-                    self._session_id,
-                    event_states_data,
-                )
-            
-            # Save StoryDirector state
-            if self.story_director:
-                sd_data = self.story_director.to_dict()
-                await self.db.save_story_director_state(
-                    db_session,
-                    self._session_id,
-                    sd_data.get("current_chapter", ""),
-                    sd_data.get("current_beat_index", 0),
-                    sd_data.get("completed_beats", []),
-                    sd_data.get("beat_history", []),
-                )
-            
-            # Save personality state (to session model)
-            if self.personality_engine:
-                personality_states = self.personality_engine.get_all_states()
-                personality_data = {
-                    "states": [state.model_dump() for state in personality_states]
-                }
-                await self.db.update_session(
-                    db_session,
-                    self._session_id,
-                    personality_state=personality_data,
-                )
+        await self.state_memory.save_all()
         
         # -------------------------------------------------------------------
         # STEP 10: LLM Personality Analysis (periodic) - FIRE AND FORGET
@@ -1090,6 +1543,25 @@ class GameEngine:
         # Build final text (Luna's response only - event is shown separately in widget)
         # -------------------------------------------------------------------
         final_text = llm_response.text
+        
+        # V4.1: Append time messages (rest, auto-advance, deadlines)
+        all_time_messages = []
+        if rest_message:
+            all_time_messages.append(rest_message)
+        if time_messages:  # time_messages from auto-advance/deadlines
+            all_time_messages.extend(time_messages)
+        if self._pending_time_message:
+            all_time_messages.append(self._pending_time_message)
+            self._pending_time_message = None
+        
+        # V4.2: Append phase change message
+        if self._pending_phase_message:
+            all_time_messages.append(self._pending_phase_message)
+            self._pending_phase_message = None
+        
+        if all_time_messages:
+            final_text = "\n\n".join(all_time_messages) + "\n\n" + final_text
+        
         # Note: dynamic_event is passed separately to UI, not appended to text
         
         # -------------------------------------------------------------------
@@ -1099,6 +1571,25 @@ class GameEngine:
         
         # Check if photo was requested
         is_photo = validated_updates.get("photo_requested", False)
+        
+        # V4.2: Check if phase change caused companion to leave
+        companion_left_due_to_phase = False
+        needs_location_refresh = False
+        if phase_result and phase_result.companion_left:
+            companion_left_due_to_phase = True
+            needs_location_refresh = True  # Need to show empty location
+        
+        # V4.2 DEBUG: Final checks before return
+        with tracer.step_context("Final Result", "result"):
+            tracer.expect("result_has_user_input", True)
+            tracer.actual("result_has_user_input", user_input is not None and len(user_input) > 0)
+            tracer.expect("result_companion", game_state.active_companion)
+            tracer.actual("result_companion", game_state.active_companion)
+            tracer.expect("result_turn_number", game_state.turn_count)
+            tracer.actual("result_turn_number", game_state.turn_count)
+        
+        # V4.2 DEBUG: Finalize turn tracing
+        tracer.finalize_turn()
         
         return TurnResult(
             text=final_text,
@@ -1113,14 +1604,17 @@ class GameEngine:
             available_actions=available_actions,
             active_event=event_data,
             new_event_started=new_event_started,
-            switched_companion=switched_companion,
-            previous_companion=old_companion if switched_companion else None,
+            switched_companion=switched_companion or (phase_result and phase_result.companion_left),
+            previous_companion=old_companion if switched_companion else (phase_result.old_companion if phase_result and phase_result.companion_left else None),
             current_companion=game_state.active_companion,
             is_temporary_companion=is_temporary,
             multi_npc_sequence=multi_npc_sequence,
             multi_npc_image_paths=multi_npc_image_paths if multi_npc_sequence else None,
             is_photo=is_photo,  # Flag indicating this is a requested photo
             dynamic_event=dynamic_event,  # Pending dynamic event with choices
+            phase_change_result=phase_result,  # V4.2: Phase change details
+            companion_left_due_to_phase=companion_left_due_to_phase,  # V4.2
+            needs_location_refresh=needs_location_refresh,  # V4.2: UI should refresh image
             turn_number=game_state.turn_count,
             provider_used=provider_used,
         )
@@ -1204,6 +1698,59 @@ class GameEngine:
             affinity_changes=result.affinity_changes,
         )
     
+    def _on_time_change(self, new_time: TimeOfDay, message: str) -> None:
+        """Callback when time changes (auto or rest).
+        
+        Args:
+            new_time: New time of day
+            message: Message to display to player
+        """
+        # Handle both enum and string
+        time_str = new_time.value if hasattr(new_time, 'value') else str(new_time)
+        print(f"[GameEngine] Time changed to {time_str}: {message}")
+        # Message will be added to result in process_turn
+        self._pending_time_message = message
+    
+    def _on_phase_change(self, result: 'PhaseChangeResult') -> None:
+        """Callback when phase changes (8 turns passed).
+        
+        Args:
+            result: Phase change result with NPC movements
+        """
+        # Handle both enum and string
+        old_time = result.old_time
+        new_time = result.new_time
+        if isinstance(old_time, str):
+            try:
+                old_time = TimeOfDay(old_time)
+            except ValueError:
+                old_time = TimeOfDay.MORNING
+        if isinstance(new_time, str):
+            try:
+                new_time = TimeOfDay(new_time)
+            except ValueError:
+                new_time = TimeOfDay.MORNING
+        old_str = old_time.value if hasattr(old_time, 'value') else str(old_time)
+        new_str = new_time.value if hasattr(new_time, 'value') else str(new_time)
+        print(f"[GameEngine] Phase changed: {old_str} -> {new_str}")
+        
+        # Build phase change message
+        messages = [result.time_message]
+        
+        if result.movement_message:
+            messages.append(result.movement_message)
+        
+        if result.companion_message:
+            messages.append(result.companion_message)
+            # Switch to solo if companion left
+            if result.new_companion == "_solo_":
+                solo_name = self._ensure_solo_companion()
+                self.state_manager.switch_companion(solo_name)
+                self.companion = solo_name
+        
+        # Store message to show player
+        self._pending_phase_message = "\n\n".join(messages)
+    
     def _check_for_new_event(self, game_state: GameState) -> Optional[Dict[str, Any]]:
         """Check for new random/daily event.
         
@@ -1261,10 +1808,10 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
 
         try:
             response = await self.llm_manager.generate(
-                prompt=prompt,
                 system_prompt=f"You are {companion_name}. {companion.base_personality[:200]}",
-                max_tokens=150,
-                temperature=0.8,
+                user_input=prompt,
+                history=[],
+                json_mode=False,
             )
             return response.text if response else ""
         except Exception as e:
@@ -1332,451 +1879,6 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
                     name, companions, companion_def.relations
                 )
     
-    def _detect_companion_in_input(self, user_input: str) -> Optional[str]:
-        """Detect if user is addressing a specific companion.
-        
-        Checks for:
-        1. Companion name (exact match)
-        2. Explicit aliases (e.g., "Professoressa" for Luna)
-        3. Role-based references (e.g., "la professoressa", "il bidello")
-        
-        This enables automatic companion switching based on conversation.
-        
-        Args:
-            user_input: Player's input text
-            
-        Returns:
-            Companion name if detected, None otherwise
-        """
-        input_lower = user_input.lower()
-        
-        # Priority 1: Check companion names (exact match)
-        for name in self.world.companions.keys():
-            if name.lower() in input_lower:
-                return name
-        
-        # Priority 2: Check explicit aliases from YAML
-        for name, companion in self.world.companions.items():
-            aliases = getattr(companion, 'aliases', []) or []
-            for alias in aliases:
-                if alias.lower() in input_lower:
-                    return name
-        
-        # Priority 3: Check role-based references (CONSERVATIVE)
-        # Only trigger if explicitly addressed with article/preposition
-        role_patterns_strict = {
-            "professoressa": ["professoressa", "prof.", "prof "],
-            "insegnante": ["insegnante"],
-            "bidella": ["bidella"],
-            "studentessa": ["studentessa","ragazza bionda", "alunna"],
-            "direttore": ["direttore", "preside"],
-        }
-        
-        for name, companion in self.world.companions.items():
-            role = getattr(companion, 'role', '').lower()
-            aliases = [a.lower() for a in getattr(companion, 'aliases', [])]
-            
-            for role_key, patterns in role_patterns_strict.items():
-                # Check if role contains the key OR if any alias matches
-                role_matches = role_key in role
-                alias_matches = any(role_key in alias for alias in aliases)
-                
-                if role_matches or alias_matches:
-                    for pattern in patterns:
-                        # Require word boundaries (space, punctuation, start/end)
-                        if re.search(rf'(^|[\s\.,;:!?]){re.escape(pattern)}([\s\.,;:!?]|$)', input_lower):
-                            return name
-        
-        return None
-    
-    def _detect_farewell(self, user_input: str) -> bool:
-        """Detect if player is saying goodbye to current companion.
-        
-        Args:
-            user_input: Player's input text
-            
-        Returns:
-            True if farewell detected
-        """
-        # V3.1 FIX: Skip empty or very short inputs
-        if not user_input or len(user_input.strip()) < 3:
-            return False
-        
-        input_lower = user_input.lower().strip()
-        
-        # V3.1: More specific farewell patterns to avoid false positives
-        farewell_patterns = [
-            # Direct goodbyes (require word boundaries)
-            r"^(ciao|arrivederci|addio|a presto|a più tardi|ci vediamo|buona giornata|buona serata|buonanotte)$",
-            # Goodbye + name/pronoun
-            r"\b(ciao|arrivederci|addio)\s+(luna|maria|stella|prof|professoressa|tesoro|amore|cara)\b",
-            # Leave expressions
-            r"\b(mi congedo|me ne vado|devo andare|scappo|torno a casa|ci sentiamo dopo)\b",
-            # Explicit leaving
-            r"\b(vado via|me ne torno|faccio tardi|è tardi)\b",
-        ]
-        
-        for pattern in farewell_patterns:
-            if re.search(pattern, input_lower):
-                print(f"[GameEngine] Farewell detected in: '{user_input[:50]}...'")
-                return True
-        
-        return False
-    
-    def _ensure_solo_companion(self) -> str:
-        """Ensure 'solo' companion exists for when player is alone.
-        
-        Returns:
-            Name of solo companion
-        """
-        solo_name = "_solo_"
-        
-        if solo_name not in self.world.companions:
-            from luna.core.models import CompanionDefinition
-            
-            solo_companion = CompanionDefinition(
-                name=solo_name,
-                role="none",
-                base_personality="You are alone. No companion is present.",
-                base_prompt="",  # No LoRA
-                physical_description="",
-                is_temporary=True,  # Skip personality engine
-            )
-            
-            self.world.companions[solo_name] = solo_companion
-            print(f"[GameEngine] Created solo companion")
-        
-        return solo_name
-    
-    def _detect_generic_npc_interaction(self, user_input: str) -> Optional[Dict[str, Any]]:
-        """Detect if user is interacting with a generic NPC (not a defined companion).
-        
-        V3 STYLE: Simple keyword matching. Extract the first noun after interaction verbs.
-        If it's not a known companion, it's a generic NPC.
-        
-        Args:
-            user_input: Player's input text
-            
-        Returns:
-            Dict with npc info if detected, None otherwise
-        """
-        input_lower = user_input.lower()
-        
-        # Get known companions (excluding temporaries)
-        known_companions = {
-            name.lower() for name, comp in self.world.companions.items()
-            if not getattr(comp, 'is_temporary', False)
-        }
-        for name, companion in self.world.companions.items():
-            if not getattr(companion, 'is_temporary', False):
-                for alias in getattr(companion, 'aliases', []):
-                    known_companions.add(alias.lower())
-                # V3.3: Add role/occupation to prevent false NPC detection
-                # e.g., Luna's role is "teacher", don't create NPC "Professoressa"
-                role = getattr(companion, 'role', '').lower()
-                if role:
-                    known_companions.add(role)
-                    # Also add Italian translations of common roles
-                    role_translations = {
-                        'teacher': ['professoressa', 'professore', 'insegnante'],
-                        'student': ['studentessa', 'studente'],
-                        'secretary': ['segretaria'],
-                        'nurse': ['infermiera'],
-                        'principal': ['preside'],
-                        'janitor': ['bidella', 'bidello'],
-                        'librarian': ['bibliotecaria'],
-                        'bartender': ['barista'],
-                        'waitress': ['cameriera'],
-                    }
-                    for eng, ita_list in role_translations.items():
-                        if role == eng or role in ita_list:
-                            for ita in ita_list:
-                                known_companions.add(ita)
-        
-        # V3 STYLE: Find noun after interaction verbs
-        # Match verb+prep, then manually extract next non-article word
-        # NOTE: Longer alternatives first to avoid matching 'a' before 'alla'
-        patterns = [
-            r"\b(dico|parlo|chiedo|sussurro|grido)\s+(alla|all'|ad|al|a|con|da|di)",
-            r"\b(saluto|incontro)\s+(il|la|lo|l'|i|gli|le|un|una|uno)",
-            r"\b(vedo|noto|trovo|guardo|scorgo)\s+(una|uno|un|il|i|gli|la|le|lo|l')?",
-            r"\b(accoglie|appare|compare|si avvicina|arriva)\s+(una|uno|un|il|la|lo|l'|i|gli|le)?",
-            r"\b(c'e'|c'è|ecco)\s+(una|uno|un|il|la|lo|l'|i|gli|le)",
-        ]
-        
-        articles = {'il', 'la', 'lo', 'l', 'i', 'gli', 'le', 'un', 'una', 'uno', 'a', 'ad', 'al', 'alla', 'con', 'da', 'di', 'all', "all'", 'ad'}
-        
-        for pattern in patterns:
-            match = re.search(pattern, input_lower)
-            if match:
-                # Get text after the match
-                start_pos = match.end()
-                remaining = input_lower[start_pos:].strip()
-                words = remaining.split()[:10]  # Check first 10 words (was 5) for better detection
-
-                target = None
-                target_idx = -1
-                for idx, word in enumerate(words):
-                    word_clean = word.strip(".,;:'!?()[]{}").lower()
-
-                    # FIX: Accetta la parola SOLO se è esplicitamente definita nei ruoli NPC!
-                    if word_clean in self.NPC_TRANSLATIONS:
-                        target = word_clean
-                        target_idx = idx
-                        break
-                    
-                    # V3.2: Also check for multi-word phrases (e.g., "giovane donna")
-                    if idx < len(words) - 1:
-                        two_word = f"{word_clean} {words[idx+1].strip('.,;:''!?()[]{}').lower()}"
-                        if two_word in self.NPC_TRANSLATIONS:
-                            target = two_word
-                            target_idx = idx
-                            break
-                
-                if not target:
-                    continue
-                
-                # Skip if it's a known companion
-                if target in known_companions:
-                    return None
-                
-                # Skip common non-NPC words
-                skip_words = {'me', 'te', 'se', 'che', 'mi', 'ti', 'si', 'ma', 'e', 'o', 'in', 'su', 'per', 'tra', 'fra', 'che', 'non', 'mi', 'ti'}
-                if target in skip_words:
-                    continue
-                
-                # V3.1: Extract full description - include context after the target word
-                # Get up to 10 more words after target for the description
-                all_words = remaining.split()
-                description_words = [target]
-                
-                # Stop words that break the description context
-                context_breakers = {'che', 'e', 'poi', 'dopo', 'quando', 'mentre', 'se', 'perché', 'perche', 'ma', 'però', 'pero', 'tuttavia'}
-                
-                for i in range(target_idx + 1, min(target_idx + 12, len(all_words))):
-                    word = all_words[i].strip(".,;:'!?()[]{}").lower()
-                    # Stop at context breakers (but allow some through if they're part of description)
-                    if word in context_breakers and i > target_idx + 5:
-                        break
-                    # Stop at sentence-ending punctuation in original
-                    if any(p in all_words[i] for p in '.;:!?'):
-                        description_words.append(all_words[i].strip(".,;:'!?()[]{}"))
-                        break
-                    description_words.append(word)
-                
-                full_description = ' '.join(description_words)
-                
-                return {
-                    'name': target.title(),
-                    'type': 'generic_npc',
-                    'description': full_description,
-                }
-        
-        return None
-    
-    # Translation mapping for common Italian -> English terms
-    NPC_TRANSLATIONS = {
-        # People - core terms
-        'donna': 'woman', 'ragazza': 'girl', 'signora': 'lady', 'femmina': 'female',
-        'uomo': 'man', 'ragazzo': 'boy', 'signore': 'gentleman', 'maschio': 'male',
-        'persona': 'person',
-        
-        # People - synonyms/variants (expanded for better detection)
-        'fanciulla': 'girl', 'giovane': 'young person', 'giovane donna': 'young woman',
-        'tizia': 'chick', 'tipa': 'girl', 'creatura': 'person',
-        'signorina': 'miss', 'madama': 'lady', 'matrona': 'matron',
-        'individuo': 'individual', 'figura': 'figure', 'soggetto': 'subject',
-        'bellezza': 'beauty', 'bella': 'beautiful woman', 'brutta': 'ugly woman',
-        
-        # Fantasy
-        'amazzona': 'amazon warrior', 'guerriera': 'warrior woman', 'guerriero': 'warrior',
-        'strega': 'witch', 'maga': 'mage', 'sacerdotessa': 'priestess',
-        'elfa': 'elf girl', 'elfo': 'elf', 'orco': 'orc', 'nano': 'dwarf',
-        'ladro': 'rogue', 'chierico': 'cleric', 'mago': 'wizard',
-        'cavaliere': 'knight', 'paladino': 'paladin', 'ranger': 'ranger',
-        'bardo': 'bard', 'druido': 'druid', 'monaco': 'monk',
-        'vampira': 'vampire woman', 'vampiro': 'vampire', 'demone': 'demon',
-        'angelo': 'angel', 'sirena': 'mermaid', 'centauro': 'centaur',
-        'minotauro': 'minotaur', 'goblin': 'goblin', 'troll': 'troll',
-        
-        # Modern/School
-        'segretaria': 'secretary', 'bibliotecaria': 'librarian',
-        'cameriera': 'waitress', 'barista': 'bartender', 'infermiera': 'nurse',
-        'professoressa': 'teacher', 'professore': 'teacher',
-        'studentessa': 'student', 'studente': 'student',
-        'preside': 'principal', 'bidella': 'janitor', 'bidello': 'janitor',
-        'commesso': 'clerk', 'cassiera': 'cashier', 'cuoca': 'cook', 'chef': 'chef',
-        'poliziotta': 'policewoman', 'poliziotto': 'policeman',
-        'pompiere': 'firefighter', 'dottoressa': 'doctor', 'dottore': 'doctor',
-        
-        # Sci-Fi
-        'pilota': 'pilot', 'ufficiale': 'officer', 'comandante': 'commander',
-        'soldato': 'soldier', 'marine': 'marine', 'cyborg': 'cyborg',
-        'androide': 'android', 'aliena': 'alien woman', 'alieno': 'alien',
-        'astronauta': 'astronaut', 'mercante': 'merchant', 'contrabbandiere': 'smuggler',
-        'cacciatore': 'bounty hunter', 'hacker': 'hacker', 'scienziata': 'scientist',
-        'scienziato': 'scientist', 'ingegnere': 'engineer',
-        
-        # Physical traits
-        'capelli': 'hair', 'rossi': 'red', 'biondi': 'blonde', 'neri': 'black',
-        'castani': 'brown', 'grigi': 'grey', 'bianchi': 'white',
-        'corti': 'short', 'lunghi': 'long', 'ricci': 'curly', 'lisci': 'straight',
-        'occhi': 'eyes', 'azzurri': 'blue', 'verdi': 'green', 'azzurri': 'blue',
-        'alta': 'tall', 'bassa': 'short', 'magra': 'slim', 'grassa': 'chubby',
-        'muscolosa': 'muscular', 'atletica': 'athletic', 'giovane': 'young',
-        'vecchia': 'old', 'anziana': 'elderly', 'matura': 'mature',
-        
-        # Clothing/Appearance
-        'vestito': 'dress', 'uniforme': 'uniform', 'armatura': 'armor',
-        'abito': 'suit', 'casual': 'casual clothes', 'elegante': 'elegant',
-        'sporco': 'dirty', 'pulito': 'clean', 'strappato': 'torn',
-        'scollato': 'low-cut', 'aderente': 'tight', 'largo': 'loose',
-        
-        # Common adjectives
-        'bella': 'beautiful', 'brutta': 'ugly', 'carina': 'cute', 'seducente': 'seductive',
-        'minacciosa': 'threatening', 'amichevole': 'friendly', 'sospettosa': 'suspicious',
-        'stanca': 'tired', 'energica': 'energetic', 'triste': 'sad', 'felice': 'happy',
-        'arrabbiata': 'angry', 'spaventata': 'scared', 'coraggiosa': 'brave',
-        
-        # Locations/Context
-        'seduta': 'sitting', 'in piedi': 'standing', 'sdraiata': 'lying down',
-        'in sella': 'riding', 'a cavallo': 'on horseback', 'armata': 'armed',
-    }
-    
-    def _translate_npc_description(self, description: str) -> str:
-        """Translate NPC description from Italian to English for SD prompt.
-        
-        Uses simple word-by-word translation with phrase handling.
-        
-        Args:
-            description: Italian description (e.g., "donna dai capelli rossi")
-            
-        Returns:
-            English description (e.g., "woman with red hair")
-        """
-        if not description:
-            return "unknown character"
-        
-        desc_lower = description.lower()
-        result = desc_lower
-        
-        # Sort by length (longest first) to handle multi-word phrases
-        sorted_translations = sorted(
-            self.NPC_TRANSLATIONS.items(),
-            key=lambda x: len(x[0]),
-            reverse=True
-        )
-        
-        for italian, english in sorted_translations:
-            # Word boundary aware replacement
-            pattern = r'\b' + re.escape(italian) + r'\b'
-            result = re.sub(pattern, english, result, flags=re.IGNORECASE)
-        
-        # Clean up extra spaces
-        result = re.sub(r'\s+', ' ', result).strip()
-        
-        # Capitalize first letter
-        return result.title()
-    
-    def _extract_visual_tags(self, description: str) -> List[str]:
-        """Extract persistent visual tags from NPC description.
-        
-        These tags are used to maintain visual consistency across multiple images.
-        
-        Args:
-            description: Italian description of the NPC
-            
-        Returns:
-            List of visual trait tags (in English for SD)
-        """
-        tags = []
-        desc_lower = description.lower()
-        
-        # Hair color mapping (Italian -> English SD tags)
-        hair_colors = {
-            'rossi': 'red hair', 'rosse': 'red hair', 'rosso': 'red hair',
-            'biondi': 'blonde hair', 'bionde': 'blonde hair', 'bionda': 'blonde hair', 'biondo': 'blonde hair',
-            'neri': 'black hair', 'nere': 'black hair', 'nero': 'black hair',
-            'castani': 'brown hair', 'castane': 'brown hair', 'castano': 'brown hair', 'castana': 'brown hair',
-            'grigi': 'grey hair', 'grigie': 'grey hair', 'grigio': 'grey hair',
-            'bianchi': 'white hair', 'bianche': 'white hair', 'bianco': 'white hair',
-            'blu': 'blue hair', 'verdi': 'green hair', 'verde': 'green hair',
-            'rosa': 'pink hair', 'viola': 'purple hair', 'arancioni': 'orange hair',
-        }
-        
-        # Hair length/style
-        hair_length = {
-            'corti': 'short hair', 'corte': 'short hair', 'corto': 'short hair', 'corta': 'short hair',
-            'lunghi': 'long hair', 'lunghe': 'long hair', 'lungo': 'long hair', 'lunga': 'long hair',
-            'ricci': 'curly hair', 'ricce': 'curly hair', 'riccio': 'curly hair',
-            'lisci': 'straight hair', 'lisce': 'straight hair',
-            'mosci': 'wavy hair', 'mosce': 'wavy hair',
-            'acconciati': 'styled hair',
-            'raccolti': 'hair up', 'raccolto': 'hair up', 'raccolta': 'hair up',
-            'sciolti': 'hair down', 'sciolto': 'hair down', 'sciolta': 'hair down',
-        }
-        
-        # Body type
-        body_types = {
-            'paffuta': 'chubby', 'paffuto': 'chubby',
-            'grassa': 'fat', 'grasso': 'fat',
-            'magra': 'skinny', 'magro': 'skinny',
-            'atletica': 'athletic', 'atletico': 'athletic',
-            'muscolosa': 'muscular', 'muscoloso': 'muscular',
-            'curvy': 'curvy', 'curva': 'curvy',
-            'alta': 'tall', 'alto': 'tall',
-            'bassa': 'short', 'basso': 'short',
-        }
-        
-        # Eyes
-        eye_colors = {
-            'occhi azzurri': 'blue eyes',
-            'occhi verdi': 'green eyes',
-            'occhi marroni': 'brown eyes',
-            'occhi neri': 'black eyes',
-            'occhi grigi': 'grey eyes',
-        }
-        
-        # Skin
-        skin_traits = {
-            'pelle chiara': 'pale skin',
-            'pelle scura': 'dark skin',
-            'abbronzata': 'tanned',
-            'pallida': 'pale',
-        }
-        
-        # Extract hair color (prioritize first match)
-        for it, en in hair_colors.items():
-            if it in desc_lower and en not in tags:
-                tags.append(en)
-                break  # Only first hair color
-        
-        # Extract hair length/style (can have multiple)
-        for it, en in hair_length.items():
-            if it in desc_lower and en not in tags:
-                tags.append(en)
-                break  # Only first hair style
-        
-        # Extract body type (first match)
-        for it, en in body_types.items():
-            if it in desc_lower and en not in tags:
-                tags.append(en)
-                break
-        
-        # Extract eye color
-        for it, en in eye_colors.items():
-            if it in desc_lower and en not in tags:
-                tags.append(en)
-                break
-        
-        # Extract skin trait
-        for it, en in skin_traits.items():
-            if it in desc_lower and en not in tags:
-                tags.append(en)
-                break
-        
-        return tags
-    
     def _find_matching_npc_template(self, description: str) -> Optional[Dict[str, Any]]:
         """Find matching NPC template based on description.
         
@@ -1788,27 +1890,39 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
         Returns:
             Template dict if found, None otherwise
         """
+        print(f"[NPC Template] Looking for template matching: '{description}'")
+        print(f"[NPC Template] Available templates: {list(self.world.npc_templates.keys()) if self.world and self.world.npc_templates else 'NONE'}")
+        
         if not self.world or not self.world.npc_templates:
+            print("[NPC Template] No world or no templates available")
             return None
         
         desc_lower = description.lower()
+        print(f"[NPC Template] Searching in: {desc_lower}")
         
         # Search for template matches by aliases
         for template_id, template in self.world.npc_templates.items():
             aliases = template.get('aliases', [])
+            print(f"[NPC Template] Checking template '{template_id}' with aliases: {aliases}")
+            
             for alias in aliases:
-                if alias.lower() in desc_lower:
+                alias_lower = alias.lower()
+                if alias_lower in desc_lower:
+                    print(f"[NPC Template] ✓ MATCH by alias: '{alias}' in '{desc_lower}'")
                     return template
             
             # Also check if template name is in description
             template_name = template.get('name', '').lower()
             if template_name and template_name in desc_lower:
+                print(f"[NPC Template] ✓ MATCH by name: '{template_name}'")
                 return template
             
             # Check template id
             if template_id.lower() in desc_lower:
+                print(f"[NPC Template] ✓ MATCH by id: '{template_id}'")
                 return template
         
+        print(f"[NPC Template] ✗ No match found for: '{description}'")
         return None
     
     def _create_npc_from_template(self, name: str, template: Dict[str, Any]) -> str:
@@ -1816,9 +1930,10 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
         
         V3.2: Creates consistent secondary characters using YAML templates.
         Uses cache to ensure same NPC always appears when encountered again.
+        V4.1: Also replaces generic NPC if it exists with the same name.
         
         Args:
-            name: Name for this NPC instance
+            name: Name for this NPC instance (from detection)
             template: Template dict from npc_templates.yaml
             
         Returns:
@@ -1829,11 +1944,25 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
         template_id = template.get('id', 'unknown')
         template_name = template.get('name', name)
         
+        # V4.1: Check if a generic NPC with the same name already exists
+        # If so, we'll replace it with the template version
+        generic_name = name.capitalize() if name else template_name
+        if generic_name in self.world.companions:
+            print(f"[GameEngine] Replacing generic NPC '{generic_name}' with template version")
+            del self.world.companions[generic_name]
+        
         # V3.2: Check cache - if we've seen this template before, reuse the same NPC
         if template_id in self._npc_template_cache:
             cached_name = self._npc_template_cache[template_id]
-            print(f"[GameEngine] Reusing cached NPC: {cached_name}")
-            return cached_name
+            print(f"[GameEngine] Reusing cached NPC: {cached_name} (template: {template_id})")
+            # Verify the NPC still exists
+            if cached_name in self.world.companions:
+                companion = self.world.companions[cached_name]
+                bp_check = companion.base_prompt[:50] if companion.base_prompt else "NONE"
+                print(f"[GameEngine] Cached NPC base_prompt: {bp_check}...")
+                return cached_name
+            else:
+                print(f"[GameEngine] WARNING: Cached NPC {cached_name} not found in world!")
         
         # Use template values
         base_prompt = template.get('base_prompt', '')
@@ -1866,6 +1995,7 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
         # Add to world temporarily (using template_id for consistency)
         instance_name = f"npc_{template_id}"
         self.world.companions[instance_name] = temp_companion
+        print(f"[GameEngine] Created template NPC: {instance_name} with {len(base_prompt)} char base_prompt")
         
         # Add to affinity system
         if instance_name not in self.state_manager.current.affinity:
@@ -2180,65 +2310,56 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
         if update.is_special is not None:
             current_outfit.is_special = update.is_special
     
-    def _check_and_handle_movement(self, user_input: str) -> Optional[MovementResponse]:
-        """Check if user input is a movement command and handle it.
+    async def generate_solo_location_image(self, location_id: Optional[str] = None) -> Optional[str]:
+        """Generate an image of the current location without any NPC (solo mode).
+        
+        V4.2: Called by UI when companion leaves due to phase change.
+        Uses the existing MovementHandler.get_solo_mode_image_params().
         
         Args:
-            user_input: Player's input
+            location_id: Location to generate image for, or None for current location
             
         Returns:
-            MovementResponse if handled, None otherwise
+            Path to generated image, or None if failed
         """
-        if not self.location_manager:
+        if self._no_media:
+            print("[GameEngine] Solo location image: skipped (media disabled)")
             return None
         
-        # Movement keywords (Italian)
-        movement_patterns = [
-            "vado ", "vai ", "andiamo ", "muoviti ", "spostati ",
-            "entra ", "entriamo ", "entro ",
-            "uscire ", "uscite ", "esco ", "esci ", "usciamo ",
-            "raggiungi ", "raggiungiamo ", "raggiungo ",
-            "torniamo ", "torna ", "torno ",
-            "vado a ", "vado in ", "vado da ",
-            "esco in ", "esco a ", "esco da ",
-        ]
-        
-        input_lower = user_input.lower()
-        
-        # Check if it's a movement intent
-        is_movement = any(pattern in input_lower for pattern in movement_patterns)
-        
-        if not is_movement:
+        if not self.media_pipeline or not self.movement_handler:
             return None
         
-        # Try to resolve location from input
-        # Remove movement keywords and try to match
-        target_name = user_input.lower()
-        for pattern in movement_patterns:
-            target_name = target_name.replace(pattern.strip(), "")
+        game_state = self.state_manager.current
+        target_location = location_id or game_state.current_location
         
-        # Clean up
-        target_name = target_name.strip().strip(".")
-        
-        # Try to resolve to location ID
-        target_id = self.location_manager.resolve_location_alias(target_name)
-        
-        if not target_id:
-            # Could be partial match - try visible locations
-            visible = self.location_manager.get_visible_locations()
-            for loc_id in visible:
-                loc = self.location_manager.get_location(loc_id)
-                if loc and (loc.name.lower() in target_name or 
-                           any(a.lower() in target_name for a in loc.aliases)):
-                    target_id = loc_id
-                    break
-        
-        if not target_id:
-            # Let LLM handle unknown location
+        if not target_location:
             return None
         
-        # Execute movement
-        return self.location_manager.move_to(target_id)
+        # Use existing method from MovementHandler
+        img_params = self.movement_handler.get_solo_mode_image_params(target_location)
+        if not img_params:
+            return None
+        
+        try:
+            print(f"[GameEngine] Generating solo location image for {target_location}")
+            media_result = await self.media_pipeline.generate_all(
+                text=f"Location: {img_params['location_name']}",
+                visual_en=img_params["visual_en"],
+                tags=img_params["tags"],
+                companion_name="_solo_",  # No character
+                base_prompt="",  # No LoRAs
+                location_id=target_location,
+                location_visual_style=img_params["location_visual_style"],
+            )
+            
+            if media_result and media_result.image_path:
+                print(f"[GameEngine] Solo location image generated: {media_result.image_path}")
+                return media_result.image_path
+            
+        except Exception as e:
+            print(f"[GameEngine] Failed to generate solo location image: {e}")
+        
+        return None
     
     # ========================================================================
     # Public API
@@ -2331,9 +2452,7 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
     async def generate_intro(self) -> TurnResult:
         """Generate opening introduction with character image.
         
-        Creates the initial scene when the game starts:
-        - Narrative introduction text
-        - Character portrait image
+        V4 Refactor: Delegates to IntroGenerator.
         
         Returns:
             Turn result with intro text and image path
@@ -2341,165 +2460,7 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
         if not self._initialized:
             await self.initialize()
         
-        game_state = self.state_manager.current
-        companion = self.world.companions.get(game_state.active_companion)
-        
-        # Build intro-specific system prompt
-        system_prompt = self._build_intro_prompt(game_state, companion)
-        
-        # Generate intro via LLM
-        try:
-            llm_response = await self.llm_manager.generate(
-                system_prompt=system_prompt,
-                user_input="Generate the opening scene introduction.",
-                history=[],
-                json_mode=True,
-            )
-            
-            # Save to memory
-            if self.memory_manager:
-                await self.memory_manager.add_message(
-                    role="assistant",
-                    content=llm_response.text,
-                    turn_number=0,
-                    visual_en=llm_response.visual_en,
-                    tags_en=llm_response.tags_en,
-                )
-            
-        except Exception as e:
-            print(f"[GameEngine] Intro generation failed: {e}")
-            # Fallback intro
-            llm_response = LLMResponse(
-                text=f"Sei arrivato in {game_state.current_location}. {game_state.active_companion} ti aspetta.",
-                visual_en=f"{game_state.active_companion} standing, welcoming expression, {game_state.current_location} background",
-                tags_en=["1girl", "solo", "standing", "smile"],
-            )
-        
-        # Generate image
-        outfit = game_state.get_outfit()
-        
-        # Get base prompt for active companion (SACRED for visual consistency)
-        active_companion_def = self.world.companions.get(game_state.active_companion)
-        base_prompt = active_companion_def.base_prompt if active_companion_def else None
-        
-        media_result = await self.media_pipeline.generate_all(
-            text=llm_response.text,
-            visual_en=llm_response.visual_en,
-            tags=llm_response.tags_en,
-            companion_name=game_state.active_companion,
-            outfit=outfit,
-            base_prompt=base_prompt,  # SACRED: Use companion's base prompt from world YAML
-            secondary_characters=None,  # Intro is always single character
-        )
-        
-        # Get available actions for intro
-        available_actions = []
-        if self.gameplay_manager:
-            actions = self.gameplay_manager.get_available_actions(game_state)
-            available_actions = [a.to_dict() for a in actions]
-        
-        return TurnResult(
-            text=llm_response.text,
-            image_path=media_result.image_path,
-            audio_path=media_result.audio_path,
-            turn_number=0,
-            provider_used=getattr(llm_response, 'provider', 'unknown'),
-            available_actions=available_actions,
-        )
-    
-    def _build_intro_prompt(
-        self,
-        game_state: GameState,
-        companion: Optional[Any],
-    ) -> str:
-        """Build system prompt for intro generation.
-        
-        Args:
-            game_state: Current game state
-            companion: Active companion definition
-            
-        Returns:
-            System prompt for intro
-        """
-        sections = [
-            "=== LUNA RPG - OPENING SCENE ===",
-            "",
-            f"Genre: {self.world.genre}",
-            f"World: {self.world.name}",
-            "",
-            "You are writing the OPENING SCENE of a visual novel.",
-            "This is the first moment the player sees - make it captivating!",
-            "",
-            "=== SETTING ===",
-            self.world.lore or self.world.description,
-            "",
-            "=== MAIN CHARACTER ===",
-        ]
-        
-        if companion:
-            # Use physical_description if available, fallback to base_prompt
-            appearance = companion.physical_description or companion.base_prompt
-            sections.extend([
-                f"Name: {companion.name}",
-                f"Role: {companion.role}",
-                f"Age: {companion.age}",
-                f"Personality: {companion.base_personality}",
-                f"Appearance: {appearance}",
-            ])
-            if companion.wardrobe:
-                default_outfit = list(companion.wardrobe.keys())[0]
-                sections.append(f"Current Outfit: {default_outfit}")
-        
-        # Handle both enum and string time_of_day
-        time_str = game_state.time_of_day.value if hasattr(game_state.time_of_day, 'value') else str(game_state.time_of_day)
-        sections.extend([
-            "",
-            f"=== STARTING LOCATION ===",
-            f"Location: {game_state.current_location}",
-            f"Time: {time_str}",
-            "",
-            "=== YOUR TASK ===",
-            "Write an engaging OPENING SCENE where the player FIRST ENCOUNTERS the main character.",
-            "",
-            "CRITICAL - FIRST MEETING RULES:",
-            "1. This is the VERY FIRST TIME the characters meet",
-            "2. The NPC does NOT know the player's name yet",
-            "3. The NPC must NOT use the player's name in dialogue",
-            "4. The NPC should address the player formally or with generic terms ('you', 'new student', 'stranger')",
-            "5. Include a moment of introduction where names would naturally be exchanged",
-            "",
-            "Set the mood, describe the atmosphere, introduce the character naturally.",
-            "",
-            "=== VISUAL GENERATION (CRITICAL) ===",
-            "The visual_en MUST include the character's BASE PROMPT for image generation:",
-            "",
-            f"BASE PROMPT for {companion.name if companion else 'character'}:",
-            companion.base_prompt if companion else "1girl, solo, detailed",
-            "",
-            "INSTRUCTIONS:",
-            "1. visual_en MUST start with the BASE PROMPT above (contains LoRAs and core features)",
-            "2. Add pose, expression, clothing, lighting details AFTER the base prompt",
-            "3. NEVER omit the base prompt - it defines the character's visual identity!",
-            "",
-            "=== OUTPUT FORMAT ===",
-            "Respond with valid JSON:",
-            "{",
-            '  "text": "Opening narrative in Italian (2-3 paragraphs, immersive, set the scene)",',
-            '  "visual_en": "BASE_PROMPT_HERE, pose, expression, clothing, lighting, background",',
-            '  "tags_en": ["score_9", "score_8_up", "1girl", "solo", "portrait", ...],',
-            '  "composition": "medium_shot"',
-            "}",
-            "",
-            "=== RULES ===",
-            "1. Introduce the character and setting naturally",
-            "2. Use atmospheric, sensory details",
-            "3. visual_en should focus on the character's appearance and expression",
-            "4. This is the FIRST impression - make it memorable!",
-            "",
-            "=== END INSTRUCTIONS ===",
-        ])
-        
-        return "\n".join(sections)
+        return await self.intro_generator.generate(self.state_manager.current)
     
     # ===================================================================
     # Outfit Change Image Generation
@@ -2515,6 +2476,13 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
             Path to generated image or None
         """
         if not self._initialized:
+            return None
+        
+        if self._no_media:
+            print("[GameEngine] Outfit change image: skipped (media disabled)")
+            return None
+        
+        if not self.media_pipeline:
             return None
         
         game_state = self.state_manager.current
@@ -2534,6 +2502,14 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
         print(f"[GameEngine] Generating image after outfit change...")
         print(f"[GameEngine] Visual: {visual_desc[:60]}...")
         
+        # V4.0: Get location description
+        location_id = game_state.current_location
+        location_desc = None
+        if location_id and self.world:
+            loc_def = self.world.locations.get(location_id)
+            if loc_def:
+                location_desc = loc_def.visual_style if loc_def.visual_style else loc_def.name
+        
         try:
             media_result = await self.media_pipeline.generate_all(
                 text=f"{game_state.active_companion} shows off her new outfit.",
@@ -2542,6 +2518,9 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
                 companion_name=game_state.active_companion,
                 outfit=outfit,
                 base_prompt=base_prompt,
+                location_id=location_id,  # V4.0: Pass location for visual enforcement
+                location_description=location_desc,
+                location_visual_style=location_desc,  # V4.1: Pass for solo mode
             )
             
             if media_result and media_result.image_path:
@@ -2601,5 +2580,66 @@ React briefly (1-2 sentences) as {companion_name} would. Stay in character."""
             updates=StateUpdate(),  # No state changes in fallback
             provider="guardrails_fallback"
         )
+    
+    def _detect_farewell(self, user_input: str) -> bool:
+        """Detect if player is saying goodbye to current companion.
+        
+        Args:
+            user_input: Player's input text
+            
+        Returns:
+            True if farewell detected
+        """
+        import re
+        
+        # V3.1 FIX: Skip empty or very short inputs
+        if not user_input or len(user_input.strip()) < 3:
+            return False
+        
+        input_lower = user_input.lower().strip()
+        
+        # V3.1: More specific farewell patterns to avoid false positives
+        farewell_patterns = [
+            # Direct goodbyes (require word boundaries)
+            r"^(ciao|arrivederci|addio|a presto|a più tardi|ci vediamo|buona giornata|buona serata|buonanotte)$",
+            # Goodbye + name/pronoun
+            r"\b(ciao|arrivederci|addio)\s+(luna|maria|stella|prof|professoressa|tesoro|amore|cara)\b",
+            # Leave expressions
+            r"\b(mi congedo|me ne vado|devo andare|scappo|torno a casa|ci sentiamo dopo)\b",
+            # Explicit leaving
+            r"\b(vado via|me ne torno|faccio tardi|è tardi)\b",
+        ]
+        
+        for pattern in farewell_patterns:
+            if re.search(pattern, input_lower):
+                print(f"[GameEngine] Farewell detected in: '{user_input[:50]}...'")
+                return True
+        
+        return False
+    
+    def _ensure_solo_companion(self) -> str:
+        """Ensure 'solo' companion exists for when player is alone.
+        
+        Returns:
+            Name of solo companion
+        """
+        solo_name = "_solo_"
+        
+        if solo_name not in self.world.companions:
+            from luna.core.models import CompanionDefinition
+            
+            solo_companion = CompanionDefinition(
+                name=solo_name,
+                role="none",
+                base_personality="You are alone. No companion is present.",
+                base_prompt="",  # No LoRA
+                physical_description="",
+                is_temporary=True,  # Skip personality engine
+            )
+            
+            self.world.companions[solo_name] = solo_companion
+            print(f"[GameEngine] Created solo companion")
+        
+        return solo_name
 
 

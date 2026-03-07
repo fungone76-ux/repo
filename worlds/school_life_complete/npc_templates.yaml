@@ -174,14 +174,7 @@ npc_templates:
 # FALLBACK - NPC Generico Femminile
 # ============================================================
 
-fallback_female:
-  base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, detailed face, natural lighting"
-  visual_tags: ["1girl", "detailed"]
 
-  # ============================================================
-  # ALTRO STAFF SCOLASTICO
-  # ============================================================
-  
   cuoca:
     id: "cuoca"
     name: "Cuoca della Mensa"
@@ -199,7 +192,7 @@ fallback_female:
       Evening: "Cleaning kitchen, preparing for tomorrow"
     recurring: true
     importance: "low"
-  
+
   bibliotecaria:
     id: "bibliotecaria"
     name: "Bibliotecaria"
@@ -217,7 +210,7 @@ fallback_female:
       Evening: "Closing the library, dim lighting"
     recurring: true
     importance: "medium"
-  
+
   infermiera:
     id: "infermiera"
     name: "Infermiera Scolastica"
@@ -227,37 +220,184 @@ fallback_female:
     physical_description: "Young woman around 26 years old, blonde hair in a ponytail, white nurse uniform with white stockings. Friendly caring smile, always ready with a thermometer."
     personality: "Caring, slightly naive, professional but sweet"
     voice_tone: "Soft, reassuring, gentle"
-    aliases: ["infermiera", "signorina dell'ambulatorio", "nurse", "la bionda"]
-    spawn_locations: ["school_corridor", "school_entrance"]
+    aliases: ["infermiera", "nurse", "la dottoressa", "sorella"]
+    spawn_locations: ["school_infirmary"]
     schedule:
-      Morning: "In the infirmary, checking supplies"
+      Morning: "Checking students health records"
       Afternoon: "Treating minor injuries"
-      Evening: "Still on duty if students need help"
+      Evening: "Preparing medical supplies"
     recurring: true
     importance: "medium"
-  
+
   allenatore:
     id: "allenatore"
-    name: "Professore di Educazione Fisica"
+    name: "Allenatore Marco"
     role: "Allenatore"
-    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, athletic man, (muscular:1.3), short brown hair, tracksuit, whistle around neck, gym background, 40 years old, confident pose, sweat on skin"
-    visual_tags: ["muscular", "athletic", "short hair", "tracksuit", "mature man"]
-    physical_description: "Athletic man around 40 years old, muscular build, short brown hair. Always in tracksuit with whistle around neck, confident and energetic."
-    personality: "Energetic, slightly arrogant, competitive"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, muscular man, (sweaty skin:1.2), whistle around neck, tracksuit, short black hair, intense expression, gym background, 35 years old, athletic physique"
+    visual_tags: ["muscular", "tracksuit", "short hair", "athletic", "mature man"]
+    physical_description: "Man around 35 years old, muscular and athletic, always slightly sweaty. Short black hair, intense expression, wears tracksuit with whistle around neck."
+    personality: "Strict but caring, pushes students to excel, secretly soft-hearted"
     voice_tone: "Loud, commanding, encouraging"
-    aliases: ["allenatore", "professore di ginnastica", "il muscoloso", "coach"]
-    spawn_locations: ["school_gym", "school_corridor"]
+    aliases: ["allenatore", "coach", "Marco", "prof di sport"]
+    spawn_locations: ["school_gym", "school_track"]
     schedule:
-      Morning: "Training in the gym"
-      Afternoon: "Supervising sports activities"
-      Evening: "Locking the gym"
+      Morning: "Setting up gym equipment"
+      Afternoon: "Training students"
+      Evening: "Private training sessions"
     recurring: true
     importance: "low"
-  
-  # ============================================================
-  # FALLBACK - NPC Generico Maschile
-  # ============================================================
 
-fallback_male:
-  base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, detailed face, natural lighting"
-  visual_tags: ["1boy", "detailed"]
+  psicologa:
+    id: "psicologa"
+    name: "Dottoressa Martini"
+    role: "Psicologa Scolastica"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, elegant woman, (dark hair bun:1.2), glasses, warm professional smile, blazer, sitting in office, 40 years old, empathetic expression, books on shelves"
+    visual_tags: ["dark hair", "glasses", "elegant", "mature woman", "professional"]
+    physical_description: "Woman around 40 years old, elegant dark hair in a bun, glasses. Warm professional smile, wears blazers, always in her office with books."
+    personality: "Empathetic, professional, insightful, maintains boundaries"
+    voice_tone: "Calm, measured, reassuring"
+    aliases: ["psicologa", "dottoressa", "Martini", "counselor"]
+    spawn_locations: ["school_counselor"]
+    schedule:
+      Morning: "Counseling sessions"
+      Afternoon: "Available for walk-ins"
+      Evening: "Writing reports"
+    recurring: true
+    importance: "high"
+
+
+  tecnico_lab:
+    id: "tecnico_lab"
+    name: "Tecnico Lab"
+    role: "Tecnico Laboratorio"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, middle-aged man, (messy hair:1.1), lab coat with stains, goggles on head, holding beaker, science lab background, 45 years old, distracted expression"
+    visual_tags: ["messy hair", "lab coat", "goggles", "mature man", "scientist"]
+    physical_description: "Man around 45 years old, messy hair, lab coat with chemical stains. Always has goggles on head, holding some beaker, distracted expression."
+    personality: "Absent-minded genius, passionate about science, forgetful"
+    voice_tone: "Excited when talking about science, otherwise distracted"
+    aliases: ["tecnico", "lab guy", "scienziato", "prof di lab"]
+    spawn_locations: ["school_lab"]
+    schedule:
+      Morning: "Preparing experiments"
+      Afternoon: "Supervising student experiments"
+      Evening: "Cleaning equipment"
+    recurring: true
+    importance: "low"
+
+  portinaia:
+    id: "portinaia"
+    name: "Signora Rossi"
+    role: "Portinaia"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, elderly woman, (grey curly hair:1.2), cardigan, sitting at desk, knowing smile, entrance hall background, 65 years old, grandmotherly appearance"
+    visual_tags: ["grey hair", "curly hair", "elderly", "cardigan", "old woman"]
+    physical_description: "Elderly woman around 65 years old, grey curly hair, always wearing a cardigan. Sits at her desk with a knowing smile, knows everything happening in school."
+    personality: "Observant, gossipy, protective of students, grandmotherly"
+    voice_tone: "Warm but investigative, asks many questions"
+    aliases: ["portinaia", "signora Rossi", "la guardiana", "caretaker"]
+    spawn_locations: ["school_entrance"]
+    schedule:
+      Morning: "Greeting students"
+      Afternoon: "Sorting mail and keys"
+      Evening: "Watching who leaves late"
+    recurring: true
+    importance: "medium"
+
+  farmacista:
+    id: "farmacista"
+    name: "Farmacista Bianchi"
+    role: "Farmacista"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, mature woman, (silver hair:1.2), elegant white coat, pearl earrings, professional smile, pharmacy background with shelves of medicine, 50 years old, knowledgeable expression, reading glasses"
+    visual_tags: ["silver hair", "white coat", "glasses", "mature woman", "elegant"]
+    physical_description: "Woman around 50 years old, silver hair elegantly styled, white pharmacist coat. Pearl earrings, professional and kind expression, always wearing reading glasses around her neck."
+    personality: "Professional, motherly, discreet, knows everyone's health issues"
+    voice_tone: "Calm, professional, reassuring"
+    aliases: ["farmacista", "signora Bianchi", "la farmacista", "chemist"]
+    spawn_locations: ["town_center", "shopping_district"]
+    schedule:
+      Morning: "Opening pharmacy, organizing shelves"
+      Afternoon: "Serving customers with a smile"
+      Evening: "Preparing prescriptions"
+    recurring: true
+    importance: "medium"
+
+  parroco:
+    id: "parroco"
+    name: "Don Antonio"
+    role: "Parroco"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, elderly man, (white hair:1.2), clerical collar, black cassock, gentle benevolent smile, gold-rimmed glasses, bible in hand, church background, 70 years old, wise expression, slightly hunched posture"
+    visual_tags: ["white hair", "old man", "glasses", "cassock", "clerical collar"]
+    physical_description: "Elderly man around 70 years old, white hair, clerical collar visible above black cassock. Gold-rimmed glasses, gentle and wise expression, slightly hunched but dignified posture."
+    personality: "Wise, forgiving, gentle but firm on morals, understanding"
+    voice_tone: "Warm, deep, measured, sometimes quoting scripture"
+    aliases: ["parroco", "don Antonio", "padre", "priest"]
+    spawn_locations: ["town_center"]
+    schedule:
+      Morning: "Morning mass, church open for prayer"
+      Afternoon: "Hearing confessions, pastoral visits"
+      Evening: "Evening prayer, locking church"
+    recurring: true
+    importance: "medium"
+
+  fioraia:
+    id: "fioraia"
+    name: "Giulia (Fioraia)"
+    role: "Fioraia"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1girl, young woman, (pink hair:1.3), flower crown, denim overalls, dirt on hands, watering can, bright smile, flower shop background, 25 years old, artistic expression, surrounded by colorful flowers"
+    visual_tags: ["pink hair", "flower crown", "overalls", "young woman", "colorful"]
+    physical_description: "Young woman around 25 years old, dyed pink hair, always wears a flower crown. Denim overalls with dirt on hands from gardening, bright artistic smile, surrounded by flowers."
+    personality: "Romantic, dreamy, creative, slightly eccentric"
+    voice_tone: "Soft, musical, enthusiastic about flowers"
+    aliases: ["fioraia", "Giulia", "la ragazza dei fiori", "florist"]
+    spawn_locations: ["town_center", "shopping_district"]
+    schedule:
+      Morning: "Arranging fresh flower deliveries"
+      Afternoon: "Serving customers with botanical advice"
+      Evening: "Tending to plants, closed shop smells like roses"
+    recurring: true
+    importance: "low"
+
+  postino:
+    id: "postino"
+    name: "Ugo (Postino)"
+    role: "Postino"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, middle-aged man, (bald with grey sideburns:1.2), postal uniform, mail bag, cycling helmet, friendly wave, slightly sweaty, 45 years old, reliable expression, bicycle nearby"
+    visual_tags: ["bald", "grey hair", "uniform", "mature man", "bicycle"]
+    physical_description: "Man around 45 years old, bald with distinctive grey sideburns, postal uniform with mail bag. Friendly and reliable expression, always slightly sweaty from cycling."
+    personality: "Reliable, chatty, knows everyone's mail and secrets, punctual"
+    voice_tone: "Cheerful, out of breath from cycling, gossipy"
+    aliases: ["postino", "Ugo", "il postino", "mailman"]
+    spawn_locations: ["town_center", "school_entrance"]
+    schedule:
+      Morning: "Sorting mail at the post office"
+      Afternoon: "Delivering mail on bicycle"
+      Evening: "Last round before heading home"
+    recurring: true
+    importance: "low"
+
+  ispettore_scuola:
+    id: "ispettore_scuola"
+    name: "Ispettore Ministeriale"
+    role: "Ispettore"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, middle-aged man, (dark suit:1.2), briefcase, serious expression, inspector badge, polished shoes, grey temples, examining documents, 48 years old, severe professional look, corridor background"
+    visual_tags: ["dark suit", "briefcase", "grey temples", "mature man", "professional"]
+    physical_description: "Man around 48 years old, elegant dark suit, briefcase always in hand. Grey at temples, severe professional expression, inspector badge visible."
+    personality: "Severe, meticulous, intimidating, fair"
+    voice_tone: "Formal, authoritative, interrogative"
+    aliases: ["ispettore", "signor ispettore", "il ministero", "inspector"]
+    spawn_locations: ["school_corridor", "school_entrance"]
+    recurring: false
+    importance: "high"
+
+  genitore_arrabbiato:
+    id: "genitore_arrabbiato"
+    name: "Genitore Arrabbiato"
+    role: "Genitore"
+    base_prompt: "score_9, score_8_up, masterpiece, photorealistic, 1boy, middle-aged man, (red face:1.2), loosened tie, waving hands animatedly, angry expression, school corridor, 42 years old, frustrated father, pointing finger"
+    visual_tags: ["red face", "angry", "loosened tie", "mature man", "frustrated"]
+    physical_description: "Man around 42 years old, red face from anger, loosened tie, waving hands animatedly. Frustrated parent arguing with school staff."
+    personality: "Angry, protective, loud, unreasonable"
+    voice_tone: "Loud, aggressive, demanding to speak to the manager"
+    aliases: ["genitore", "quel padre", "l'uomo arrabbiato", "angry parent"]
+    spawn_locations: ["school_entrance", "school_corridor"]
+    recurring: false
+    importance: "medium"

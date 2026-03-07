@@ -35,7 +35,7 @@ locations:
     visual_style: "lockers, posters, natural light"
     lighting: "indoor daylight"
     
-    connected_to: ["school_entrance", "school_classroom", "school_gym", "school_library", "school_cafeteria", "school_bathroom_male", "school_bathroom_female", "school_office_luna"]
+    connected_to: ["school_entrance", "school_classroom", "school_gym", "school_library", "school_cafeteria", "school_bathroom_male", "school_bathroom_female", "school_office_luna", "school_secretary"]
     aliases: ["corridoio", "hallway", "passaggio"]
     
     available_times: ["Morning", "Afternoon", "Evening"]
@@ -176,6 +176,25 @@ locations:
     time_descriptions:
       Evening: "L'ufficio è illuminato solo dalla lampada della scrivania. Intimo."
   
+  school_secretary:
+    id: "school_secretary"
+    name: "Segreteria Scolastica"
+    description: "L'ufficio amministrativo della scuola. Impiegati al lavoro, archivi, computer."
+    visual_style: "office desks, filing cabinets, fluorescent lighting, school administration, papers, computers"
+    lighting: "fluorescent indoor"
+    
+    parent_location: "school_corridor"
+    requires_parent: true
+    
+    connected_to: ["school_corridor"]
+    aliases: ["segreteria", "segreteria scolastica", "ufficio amministrativo", "amministrazione"]
+    
+    available_times: ["Morning", "Afternoon"]
+    closed_description: "La segreteria è chiusa. Torna negli orari di ufficio."
+    
+    available_characters: ["segretaria", "impiegato"]
+    companion_can_follow: true
+  
   school_storage:
     id: "school_storage"
     name: "Deposito delle Scope"
@@ -199,7 +218,7 @@ locations:
     id: "school_bathroom_male"
     name: "Bagni Maschili"
     description: "Bagni del piano terra. Piastrelle, specchi, odore di disinfettante."
-    visual_style: "tiles, mirrors, fluorescent"
+    visual_style: "public school bathroom, institutional setting, white ceramic tiles on walls, multiple sinks with mirrors above, fluorescent tube lighting, toilet stalls with metal doors, concrete floor, cleaning supplies visible, no windows, industrial feel"
     lighting: "fluorescent"
     
     parent_location: "school_corridor"
@@ -217,7 +236,7 @@ locations:
     id: "school_bathroom_female"
     name: "Bagni Femminili"
     description: "Bagni femminili. Piastrelle rosa, specchi, asciugamani."
-    visual_style: "tiles, mirrors, feminine"
+    visual_style: "public school bathroom, institutional setting, white and pink ceramic tiles, multiple sinks with mirrors, fluorescent tube lighting, toilet stalls, paper towel dispenser, concrete floor, no windows, school environment"
     lighting: "fluorescent"
     
     parent_location: "school_corridor"
@@ -319,7 +338,7 @@ locations:
     lighting: "warm indoor"
     
     connected_to: ["bar_town"]
-    aliases: ["casa", "home", "appartamento"]
+    aliases: ["casa", "home", "appartamento", "casa mia", "mia casa", "a casa", "torno a casa", "casa mia", "il mio appartamento"]
     
     available_times: ["Afternoon", "Evening", "Night"]
     

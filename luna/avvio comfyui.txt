@@ -8,6 +8,7 @@ pip install diffusers transformers einops timm
 pip install -r requirements.txt
 pip install -r ComfyUI-KJNodes/requirements.txt
 pip install torchsde
+cd /workspace/ComfyUI && pip install -r requirements.txt
 pip install color-matcher
 pkill -f "python main.py" && sleep 3
 ulimit -n 1048576

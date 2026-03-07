@@ -149,6 +149,7 @@ class StateManager:
                 outfit_states[name] = OutfitState(**data)
         
         # Create game state
+        print(f"[StateManager.load] Loaded location from DB: {session_model.current_location}")
         state = GameState(
             session_id=session_model.id,
             world_id=session_model.world_id,
@@ -175,11 +176,12 @@ class StateManager:
         self._current = state
         return state
     
-    async def save(self, db: AsyncSession) -> bool:
+    async def save(self, db: AsyncSession, name: str = None) -> bool:
         """Save current game state.
         
         Args:
             db: Database session
+            name: Optional custom save name
             
         Returns:
             True if saved successfully
@@ -201,22 +203,32 @@ class StateManager:
             for name, outfit in state.companion_outfits.items()
         }
         
+        # Prepare update data
+        # V4.2 FIX: Use dict() copies for JSON fields to ensure SQLAlchemy detects changes
+        # When the same dict object is modified in-place and passed, SQLAlchemy may not detect changes
+        print(f"[StateManager.save] Saving location: {state.current_location}")
+        update_data = {
+            "turn_count": state.turn_count,
+            "time_of_day": state.time_of_day.value if hasattr(state.time_of_day, 'value') else str(state.time_of_day),
+            "current_location": state.current_location,
+            "active_companion": state.active_companion,
+            "companion_outfit": state.companion_outfit,
+            "outfit_states": outfit_data,
+            "player_state": state.player.model_dump(),
+            "npc_states": npc_data,
+            "affinity": dict(state.affinity),  # Copy to ensure SQLAlchemy detects changes
+            "flags": dict(state.flags),  # Copy to ensure SQLAlchemy detects changes
+        }
+        
+        # Add name if provided
+        if name:
+            update_data["name"] = name
+        
         # Update database
-        # Handle both enum and string time_of_day
-        time_value = state.time_of_day.value if hasattr(state.time_of_day, 'value') else str(state.time_of_day)
         updated = await self.db.update_session(
             db=db,
             session_id=state.session_id,
-            turn_count=state.turn_count,
-            time_of_day=time_value,
-            current_location=state.current_location,
-            active_companion=state.active_companion,
-            companion_outfit=state.companion_outfit,
-            outfit_states=outfit_data,
-            player_state=state.player.model_dump(),
-            npc_states=npc_data,
-            affinity=state.affinity,
-            flags=state.flags,
+            **update_data
         )
         
         return updated

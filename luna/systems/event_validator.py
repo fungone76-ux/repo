@@ -5,6 +5,7 @@ transmitted to the LLM for narrative coherence.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Tuple
 from enum import Enum

@@ -1,6 +1,6 @@
 # Regole di Codifica - Luna RPG v4
 
-**Data:** 2026-02-24  
+**Data:** 2026-03-03  
 **Regola fondamentale:** Nuove feature = Nuovi file
 
 ---
@@ -17,16 +17,19 @@
 ### 1. Sistemi di Gameplay
 
 **File esistenti (congelati):**
-- `engine.py` - ~1200 righe ⚠️ CONGELATO
+- `engine.py` - ~2470 righe ⚠️ CONGELATO (in riduzione!)
 - `personality.py` - OK per bug fix, NON nuove feature
 
-**Nuovi file:**
+**Nuovi file (esempi recenti):**
 ```
 src/luna/systems/
-├── inventory.py          # Sistema inventario (nuovo)
-├── crafting.py           # Sistema crafting (nuovo)
-├── trading.py            # Sistema economia avanzata (nuovo)
-└── achievements.py       # Sistema achievement (nuovo)
+├── movement.py           # 🆕 V4: Gestione movimento (estratto da engine)
+├── state_memory.py       # 🆕 V4: Unificazione stato + memoria
+├── intro.py              # 🆕 V4: Generazione scena iniziale
+├── inventory.py          # Sistema inventario
+├── crafting.py           # Sistema crafting
+├── trading.py            # Sistema economia avanzata
+└── achievements.py       # Sistema achievement
 ```
 
 ### 2. AI e Prompts
@@ -38,9 +41,9 @@ src/luna/systems/
 **Nuovi file:**
 ```
 src/luna/ai/prompts/
-├── combat.py             # Prompt per combattimento (nuovo)
-├── exploration.py        # Prompt per esplorazione (nuovo)
-└── dialogue_types.py     # Tipi di dialogo speciali (nuovo)
+├── combat.py             # Prompt per combattimento
+├── exploration.py        # Prompt per esplorazione
+└── dialogue_types.py     # Tipi di dialogo speciali
 ```
 
 ### 3. Media e Immagini
@@ -51,18 +54,18 @@ src/luna/ai/prompts/
 **Nuovi file:**
 ```
 src/luna/media/builders/
-├── cinematic.py          # Builder per scene cinematiche (nuovo)
-├── portrait.py           # Builder per ritratti (nuovo)
-└── action.py             # Builder per azioni dinamiche (nuovo)
+├── cinematic.py          # Builder per scene cinematiche
+├── portrait.py           # Builder per ritratti
+└── action.py             # Builder per azioni dinamiche
 ```
 
 ### 4. Utilità e Helpers
 
 ```
 src/luna/utils/
-├── text_cleaner.py       # Pulizia testo LLM (nuovo)
-├── validators.py         # Validazione risposte (nuovo)
-└── formatters.py         # Formattazione output (nuovo)
+├── text_cleaner.py       # Pulizia testo LLM
+├── validators.py         # Validazione risposte
+└── formatters.py         # Formattazione output
 ```
 
 ---
@@ -76,6 +79,7 @@ src/luna/utils/
 | Commenti | ✅ Sì | Aggiungere documentazione |
 | Type hints | ✅ Sì | Migliorare tipizzazione |
 | Ottimizzazione | ⚠️ Con cautela | Se non cambia logica |
+| Estrarre codice | ✅ Sì | Spostare in nuovo file |
 
 ## ❌ Cosa NON si può fare nei file esistenti
 
@@ -132,7 +136,7 @@ class GameEngine:
 
 | Tipo | Max righe | Azione se superato |
 |------|-----------|-------------------|
-| `engine.py` | 1200 | ✅ Congelato |
+| `engine.py` | 2500 | ⚠️ In riduzione! Estrarre codice |
 | `prompt_builder.py` | 1000 | ✅ Congelato |
 | `builders.py` | 1000 | ✅ Congelato |
 | Nuovi file | 500 | Crea sotto-moduli |
@@ -141,13 +145,57 @@ class GameEngine:
 
 ## 🔒 File Congelati (solo bug fix)
 
-- `src/luna/core/engine.py`
+- `src/luna/core/engine.py` - In ottimizzazione, estrarre codice quando possibile
 - `src/luna/core/prompt_builder.py`
 - `src/luna/media/builders.py`
 
-**Questi file funzionano.** Non li tocchiamo se non per bug critici.
+---
+
+## 🆕 File Creati Recentemente (Marzo 2026)
+
+| File | Descrizione | Righe |
+|------|-------------|-------|
+| `systems/movement.py` | Gestione movimento player | ~250 |
+| `systems/state_memory.py` | Stato + memoria unificati | ~250 |
+| `systems/intro.py` | Generazione scena iniziale | ~200 |
 
 ---
 
-**Ultimo aggiornamento:** 2026-02-24  
+## 🎭 Convenzione NPC Templates (V4.1)
+
+### Quando creare un NPC Template
+
+Crea un template in `npc_templates.yaml` quando:
+- L'NPC appare in **location specifiche** (es. segretaria in segreteria)
+- Ha **tratti visivi persistenti** (capelli rossi, occhiali, etc.)
+- Deve essere **riconoscibile** tra incontri multipli
+
+### Struttura Template
+
+```yaml
+npc_templates:
+  nome_template:
+    id: "nome_template"           # ID univoco
+    name: "Nome Visualizzato"     # Nome nell'UI
+    role: "Ruolo"                 # Es. "Segretaria Scolastica"
+    base_prompt: "..."            # Prompt SD (inglese)
+    visual_tags: ["red hair", ...] # Tag per consistenza
+    physical_description: "..."   # Descrizione per LLM
+    personality: "..."            # Tratti carattere
+    voice_tone: "..."             # Tono voce
+    aliases: ["alias1", "alias2"] # Trigger detection
+    spawn_locations: ["loc1"]     # Location ammesse
+    recurring: true               # Può riapparire
+    importance: "medium"          # low/medium/high
+```
+
+### Fallback
+
+Se non c'è un template, il sistema crea un NPC generico usando:
+- `npc_logic.female_hints` / `npc_logic.male_hints` per gender detection
+- `fallback_female.base_prompt` / `fallback_male.base_prompt` per aspetto
+
+---
+
+**Ultimo aggiornamento:** 2026-03-03  
 **Deciso da:** Kimi + Utente

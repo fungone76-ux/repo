@@ -18,22 +18,22 @@ from luna.ui.startup_dialog import StartupDialog
 from luna.ui.main_window import MainWindow
 
 
-def main() -> int:
-    """Entry point."""
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Luna RPG v4")
-    parser.add_argument(
-        "--no-media", 
-        action="store_true",
-        help="Debug mode: disable image/video generation (no ComfyUI connection)"
-    )
-    args = parser.parse_args()
+def main(debug: bool = False, no_media: bool = False) -> int:
+    """Entry point.
     
-    # Set debug mode environment variable
-    if args.no_media:
-        import os
+    Args:
+        debug: Enable debug tracing
+        no_media: Disable image/video generation
+    """
+    import os
+    
+    # Set environment variables based on arguments
+    if no_media:
         os.environ["LUNA_DEBUG_NO_MEDIA"] = "1"
-        print("[App] DEBUG MODE: Media generation disabled")
+        print("[App] Media generation disabled (--no-media)")
+    
+    if debug:
+        os.environ["LUNA_DEBUG_MODE"] = "1"
     
     # Create QApplication first
     qt_app = QApplication(sys.argv)

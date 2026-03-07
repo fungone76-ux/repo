@@ -11,6 +11,8 @@ from luna.core.event_context_builder import EventContextBuilder
 from luna.ai.content_guidelines import ContentGuidelines
 from luna.systems.personality import PersonalityEngine
 from luna.systems.location import LocationManager
+from luna.systems.activity_system import ActivitySystem
+from luna.systems.initiative_system import InitiativeSystem
 
 
 class PromptBuilder:
@@ -41,6 +43,8 @@ class PromptBuilder:
         switched_from: Optional[str] = None,
         is_temporary: bool = False,
         forced_poses: Optional[str] = None,
+        activity_system: Optional[Any] = None,
+        initiative_system: Optional[Any] = None,
     ) -> str:
         """Build complete system prompt.
         
@@ -227,6 +231,44 @@ class PromptBuilder:
                     "",
                 ])
             
+            # Activity System - What NPC is doing RIGHT NOW
+            if activity_system:
+                activity_context = activity_system.get_activity_context(companion.name)
+                if activity_context:
+                    sections.extend([
+                        activity_context,
+                        "",
+                    ])
+            
+            # Initiative System - Proactive behavior
+            if initiative_system:
+                initiative_context = initiative_system.get_global_initiative_instruction()
+                if initiative_context:
+                    sections.extend([
+                        initiative_context,
+                        "",
+                    ])
+                
+                # Check for specific initiative trigger
+                affinity = game_state.affinity.get(companion.name, 0)
+                emotional_state = ""
+                if game_state.npc_states and companion.name in game_state.npc_states:
+                    emotional_state = game_state.npc_states[companion.name].emotional_state
+                
+                time_str = game_state.time_of_day.value if hasattr(game_state.time_of_day, 'value') else str(game_state.time_of_day)
+                specific_initiative = initiative_system.get_initiative_prompt(
+                    npc_name=companion.name,
+                    affinity=affinity,
+                    emotional_state=emotional_state,
+                    time_of_day=time_str,
+                    current_turn=game_state.turn_count
+                )
+                if specific_initiative:
+                    sections.extend([
+                        specific_initiative,
+                        "",
+                    ])
+            
             sections.extend([
                 "=== CHARACTER VISUAL STYLE ===",
                 f"Character LoRAs and base quality tags: {companion.base_prompt}",
@@ -288,7 +330,7 @@ class PromptBuilder:
                 "4. Photos should be selfie-style or mirror shots (you're taking them yourself)",
                 "5. You can DECLINE photo requests if you want - you're not obligated",
                 "",
-                f"Your current location: {companion.schedule.get(game_state.time_of_day, {}).preferred_location if companion and hasattr(companion, 'schedule') else 'unknown'}",
+                f"Your current location: {companion.schedule.get(game_state.time_of_day).location if companion and hasattr(companion, 'schedule') and companion.schedule.get(game_state.time_of_day) else 'unknown'}",
                 "",
             ])
         
@@ -497,9 +539,15 @@ class PromptBuilder:
             "",
             "**1. 'visual_en' (Natural Language Description):**",
             "   - Purpose: Concise description (20-35 words) of the image",
-            "   - Focus: Describe ACTION, POSE, and CHARACTERS visible",
+            "   - Focus: Describe ACTION, POSE, CHARACTER and LOCATION/BACKGROUND",
             "   - IMPORTANT: Name the character if you want to see them",
             "   - Outfit: DESCRIBE the current outfit in detail (blazer, skirt, etc.)",
+            "   - LOCATION (CRITICAL): MUST include current location in visual_en!",
+            f"   - Current location: {game_state.current_location}",
+            "   - Examples:",
+            "     * If in 'school_bathroom' → visual_en: '...in school bathroom, white tiles, mirrors'",
+            "     * If in 'classroom' → visual_en: '...in classroom, desks, blackboard, windows'",
+            "     * If in 'gym' → visual_en: '...in gymnasium, wooden floor, basketball hoop'",
             "   - Constraints:",
             "     * NO glasses, NO hats, NO sunglasses",
             "     * NO facial expressions ('sad', 'happy', 'smiling') - use in dialogue only",

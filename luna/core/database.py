@@ -26,6 +26,9 @@ class GameSessionModel(Base):
     world_id = Column(String, nullable=False)
     active_companion = Column(String, nullable=False)
     
+    # Custom save name
+    name = Column(String, nullable=True)
+    
     # Time & Progress
     turn_count = Column(Integer, default=0)
     time_of_day = Column(String, default="Morning")
@@ -210,9 +213,14 @@ class DatabaseManager:
         )
     
     async def create_tables(self) -> None:
-        """Create all database tables."""
+        """Create all database tables and run migrations."""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        
+        # Run migrations for existing databases
+        async with self.session() as db:
+            await migrate_database(db)
+            await db.commit()
     
     async def drop_tables(self) -> None:
         """Drop all tables (DANGER!)."""
@@ -740,10 +748,158 @@ class DatabaseManager:
             .where(StoryDirectorStateModel.session_id == session_id)
         )
         return result.scalar_one_or_none()
+    
+    async def list_saves(
+        self,
+        db: AsyncSession,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """List available game saves with metadata.
+        
+        Args:
+            db: Database session
+            limit: Maximum number of saves to return (default 50)
+            
+        Returns:
+            List of save info dicts with session_id, name, world_id, 
+            active_companion, current_location, turn_count, updated_at
+        """
+        from sqlalchemy import select, desc
+        
+        result = await db.execute(
+            select(GameSessionModel)
+            .order_by(desc(GameSessionModel.updated_at))
+            .limit(limit)
+        )
+        sessions = result.scalars().all()
+        
+        saves = []
+        for session in sessions:
+            saves.append({
+                'session_id': session.id,
+                'name': session.name or f"Salvataggio {session.id}",
+                'world_id': session.world_id,
+                'active_companion': session.active_companion,
+                'current_location': session.current_location,
+                'turn_count': session.turn_count,
+                'updated_at': session.updated_at.strftime("%Y-%m-%d %H:%M") if session.updated_at else "Unknown",
+            })
+        
+        return saves
+    
+    async def delete_save(
+        self,
+        db: AsyncSession,
+        session_id: int,
+    ) -> bool:
+        """Delete a game save and all related data.
+        
+        Args:
+            db: Database session
+            session_id: Session ID to delete
+            
+        Returns:
+            True if deleted, False if not found
+        """
+        from sqlalchemy import select, delete
+        
+        # Check if session exists
+        result = await db.execute(
+            select(GameSessionModel).where(GameSessionModel.id == session_id)
+        )
+        session = result.scalar_one_or_none()
+        
+        if not session:
+            return False
+        
+        # Delete related data first (cascade should handle this, but be explicit)
+        # Delete quest states
+        await db.execute(
+            delete(QuestStateModel).where(QuestStateModel.session_id == session_id)
+        )
+        
+        # Delete global event states
+        await db.execute(
+            delete(GlobalEventStateModel).where(GlobalEventStateModel.session_id == session_id)
+        )
+        
+        # Delete story director state
+        await db.execute(
+            delete(StoryDirectorStateModel).where(StoryDirectorStateModel.session_id == session_id)
+        )
+        
+        # Delete the session itself
+        await db.execute(
+            delete(GameSessionModel).where(GameSessionModel.id == session_id)
+        )
+        
+        await db.commit()
+        print(f"[DatabaseManager] Deleted save {session_id}")
+        return True
+    
+    async def delete_all_saves(
+        self,
+        db: AsyncSession,
+    ) -> int:
+        """Delete ALL game saves and related data.
+        
+        Args:
+            db: Database session
+            
+        Returns:
+            Number of deleted sessions
+        """
+        from sqlalchemy import delete, select
+        
+        # Get count before deletion
+        result = await db.execute(select(GameSessionModel))
+        count = len(result.scalars().all())
+        
+        if count == 0:
+            return 0
+        
+        # Delete all related data first
+        await db.execute(delete(QuestStateModel))
+        await db.execute(delete(GlobalEventStateModel))
+        await db.execute(delete(StoryDirectorStateModel))
+        
+        # Delete all sessions
+        await db.execute(delete(GameSessionModel))
+        
+        await db.commit()
+        print(f"[DatabaseManager] Deleted ALL {count} saves")
+        return count
 
 
 # Singleton instance (will be initialized with config)
 _db_manager: Optional[DatabaseManager] = None
+
+
+async def migrate_database(db: AsyncSession) -> None:
+    """Run database migrations.
+    
+    Handles schema updates for existing databases.
+    """
+    from sqlalchemy import text
+    
+    # Check if 'name' column exists in game_sessions
+    try:
+        result = await db.execute(
+            text("SELECT name FROM game_sessions LIMIT 1")
+        )
+        print("[DB Migrate] Column 'name' already exists")
+    except Exception:
+        # Column doesn't exist, add it
+        print("[DB Migrate] Adding 'name' column to game_sessions...")
+        try:
+            await db.execute(
+                text("ALTER TABLE game_sessions ADD COLUMN name VARCHAR")
+            )
+            await db.commit()
+            print("[DB Migrate] Column 'name' added successfully")
+        except Exception as e:
+            print(f"[DB Migrate] Error adding column: {e}")
+            await db.rollback()
 
 
 def get_db_manager(config: Optional[AppConfig] = None) -> DatabaseManager:
