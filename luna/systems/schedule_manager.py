@@ -302,6 +302,25 @@ class ScheduleManager:
         
         return present[0]
     
+    def get_npc_current_location(self, npc_name: str) -> Optional[str]:
+        """Get the current location of an NPC based on their schedule.
+        
+        Args:
+            npc_name: Name of the NPC
+            
+        Returns:
+            Location ID where NPC should be, or None if no schedule
+        """
+        schedule = self._schedules.get(npc_name)
+        if not schedule:
+            return None
+        
+        entry = schedule.get_current(self.game_state.time_of_day)
+        if not entry:
+            return None
+        
+        return entry.location
+    
     def build_schedule_context(self, npc_name: str) -> str:
         """Build context string for LLM about NPC's current situation.
         

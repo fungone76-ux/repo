@@ -78,11 +78,17 @@ class StateMemoryManager:
             # 2. Quest states
             if self.quest_engine:
                 for quest_state in self.quest_engine.get_all_states():
+                    # Handle both enum and string status
+                    status_value = (
+                        quest_state.status.value 
+                        if hasattr(quest_state.status, 'value') 
+                        else str(quest_state.status)
+                    )
                     await self.db.save_quest_state(
                         db_session,
                         self.session_id,
                         quest_state.quest_id,
-                        quest_state.status.value,
+                        status_value,
                         quest_state.current_stage_id,
                     )
             

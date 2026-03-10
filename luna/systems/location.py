@@ -239,8 +239,24 @@ class LocationManager:
         #     return False, "Non c'è connessione diretta. Prova un altro percorso."
         
         # Check time availability
+        # V4.4 FIX: Handle both enum and string time comparisons
         if target.available_times:
-            if self.game_state.time_of_day not in target.available_times:
+            # Convert current time to string for comparison
+            current_time = self.game_state.time_of_day
+            if hasattr(current_time, 'value'):
+                current_time_str = current_time.value
+            else:
+                current_time_str = str(current_time)
+            
+            # Convert available_times to strings if needed
+            available_times_str = []
+            for t in target.available_times:
+                if hasattr(t, 'value'):
+                    available_times_str.append(t.value)
+                else:
+                    available_times_str.append(str(t))
+            
+            if current_time_str not in available_times_str:
                 return False, target.closed_description or "È chiuso a quest'ora."
         
         # Check required item

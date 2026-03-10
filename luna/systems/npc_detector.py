@@ -12,7 +12,7 @@ from typing import Dict, Optional, Any, List
 class NPCDetector:
     """Detects NPC mentions in user input with proper validation."""
     
-    # Words that are NEVER valid NPC names (common adjectives/postures)
+    # Words that are NEVER valid NPC names (common adjectives/postures/time words)
     SKIP_WORDS = {
         # Postures
         'seduta', 'seduto', 'sdraiata', 'sdraiato', 'chinata', 'chinato',
@@ -26,6 +26,25 @@ class NPCDetector:
         'capelli', 'testa', 'mano', 'mani', 'braccio', 'braccia',
         # Directions
         'destra', 'sinistra', 'davanti', 'dietro', 'sopra', 'sotto',
+        # Time expressions (CRITICAL: prevent "non vedo l'ora" -> "Ora" NPC)
+        'ora', 'adesso', 'poi', 'prima', 'dopo', 'sempre', 'mai', 'spesso',
+        'oggi', 'ieri', 'domani', 'subito', 'presto', 'tardi',
+        # Emotional expressions / gestures (CRITICAL: prevent "arrossendo" -> "Rrossendo" NPC)
+        'arrossendo', 'rossendo', 'rrossendo', 'sorridendo', 'ridendo', 'piangendo', 'sospirando',
+        'annuendo', 'scuotendo', 'alzando', 'abbassando', 'indicando', 'guardando',
+        # Abstract concepts (CRITICAL: prevent "la bellezza" -> "Bellezza" NPC)
+        'bellezza', 'bruttezza', 'intelligenza', 'stupidità', 'gentilezza', 'cattiveria',
+        'forza', 'debolezza', 'coraggio', 'paura', 'gioia', 'tristezza', 'felicità',
+        # Adverbs (CRITICAL: prevent "ti trovo molto intrigante" -> "Molto" NPC)
+        'molto', 'poco', 'troppo', 'tanto', 'così', 'abbastanza', 'veramente', 'davvero',
+        'probabilmente', 'forse', 'sicuramente', 'certamente', 'assolutamente',
+        # Adjectives (CRITICAL: prevent "intrigante", "interessante", etc. -> NPC names)
+        'intrigante', 'interessante', 'fredda', 'freddo', 'caldi', 'calda', 'caldo', 
+        'bella', 'bello', 'brutta', 'brutto', 'intelligente', 'simpatica', 'simpatico',
+        'premurosa', 'premuroso', 'strana', 'strano', 'speciale', 'unica', 'unico',
+        'diversa', 'diverso', 'normale', 'particolare', 'tipica', 'tipico',
+        # Nouns (CRITICAL: prevent "arriva un messaggio" -> "Messaggio" NPC)
+        'messaggio', 'cellulare', 'telefono', 'chiamata', 'sms', 'notifica',
     }
     
     def __init__(self, world: Any) -> None:

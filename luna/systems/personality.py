@@ -298,10 +298,13 @@ class PersonalityEngine:
             
             impression_changes = result.get("impression_changes", {})
             
-            # Apply LLM changes (more nuanced than regex)
-            self._apply_impression_changes(companion_name, impression_changes)
-            
-            print(f"[PersonalityEngine] LLM analysis: {len(detected)} traits detected")
+            # V4.5 FIX: Only apply LLM changes if not empty (don't overwrite regex changes)
+            if impression_changes:
+                # Apply LLM changes (more nuanced than regex)
+                self._apply_impression_changes(companion_name, impression_changes)
+                print(f"[PersonalityEngine] LLM analysis applied changes: {impression_changes}")
+            else:
+                print(f"[PersonalityEngine] LLM analysis returned no changes, keeping regex results")
             
             return BehavioralUpdate(
                 detected_traits=detected,

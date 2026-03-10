@@ -25,10 +25,17 @@ class TimeConfig:
     enable_deadlines: bool = True
     
     # Rest command triggers (Italian)
+    # V4.4: Separated sleep (full night) from rest (short break)
     rest_triggers: List[str] = field(default_factory=lambda: [
+        # Short rest - advance one period
+        "riposo", "mi riposo", "faccio una pausa", "mi fermo a riposare",
+    ])
+    
+    # Full sleep triggers - go to next morning
+    sleep_triggers: List[str] = field(default_factory=lambda: [
         "dormo", "dormire", "vado a dormire", "finisco la giornata",
-        "vado a casa", "riposo", "mi riposo", "end of day",
-        "chiudo la giornata", "a letto", "sonno"
+        "vado a casa", "end of day", "chiudo la giornata", 
+        "a letto", "sonno", "buonanotte", "notte"
     ])
 
 
@@ -133,6 +140,8 @@ class TimeManager:
     def check_rest_command(self, user_input: str) -> Optional[str]:
         """Check if user wants to rest/sleep.
         
+        V4.4: Distinguishes between short rest (one period) and full sleep (to next morning)
+        
         Args:
             user_input: Player's input
             
@@ -144,22 +153,30 @@ class TimeManager:
         
         text_lower = user_input.lower()
         
+        # Check for full sleep commands first (higher priority)
+        for trigger in self.config.sleep_triggers:
+            if trigger in text_lower:
+                return self._advance_time(auto=False, is_rest=True, is_full_sleep=True)
+        
+        # Check for short rest commands
         for trigger in self.config.rest_triggers:
             if trigger in text_lower:
-                return self._advance_time(auto=False, is_rest=True)
+                return self._advance_time(auto=False, is_rest=True, is_full_sleep=False)
         
         return None
     
-    def _advance_time(self, auto: bool = True, is_rest: bool = False) -> str:
+    def _advance_time(self, auto: bool = True, is_rest: bool = False, is_full_sleep: bool = False) -> str:
         """Advance time to next period.
         
         Args:
             auto: True if auto-advance, False if manual
             is_rest: True if triggered by rest command
+            is_full_sleep: True if full sleep (go to next morning)
             
         Returns:
             Message describing time change
         """
+        import random
         old_time = self.game_state.time_of_day
         
         # Handle string time
@@ -169,7 +186,34 @@ class TimeManager:
             except ValueError:
                 old_time = TimeOfDay.MORNING
         
-        # Advance to next time
+        # V4.4 FIX: Full sleep goes to next morning
+        if is_full_sleep:
+            # Always go to Morning (next day)
+            new_time = TimeOfDay.MORNING
+            
+            # Update state
+            self.game_state.time_of_day = new_time
+            self._turns_since_last_advance = 0
+            
+            # Special sleep messages
+            sleep_messages = [
+                "🌙 Chiudi gli occhi e ti addormenti...",
+                "💤 Una notte di riposo ben meritata...",
+                "🛏️ Il sonno ti avvolge dolcemente...",
+            ]
+            message = random.choice(sleep_messages)
+            message += " È un nuovo giorno. Ora è Morning."
+            
+            old_time_str = old_time.value if hasattr(old_time, 'value') else str(old_time)
+            print(f"[TimeManager] Full sleep: {old_time_str} → Morning (next day)")
+            
+            # Callback
+            if self.on_time_change:
+                self.on_time_change(new_time, message)
+            
+            return message
+        
+        # Normal advancement (one period)
         times = list(TimeOfDay)
         current_idx = times.index(old_time)
         next_idx = (current_idx + 1) % len(times)
@@ -183,7 +227,6 @@ class TimeManager:
         new_time_str = new_time.value if hasattr(new_time, 'value') else str(new_time)
         
         if is_rest:
-            import random
             message = random.choice(self._rest_messages)
             message += f" Ora è {new_time_str}."
         else:

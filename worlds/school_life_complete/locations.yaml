@@ -16,7 +16,7 @@ locations:
     lighting: "natural daylight"
     
     connected_to: ["school_corridor", "park"]
-    aliases: ["ingresso", "portone", "entrata"]
+    aliases: ["ingresso", "portone", "entrata", "scuola", "a scuola"]
     
     available_times: ["Morning", "Afternoon", "Evening"]
     
@@ -345,4 +345,25 @@ locations:
     companion_can_follow: false
     
     time_descriptions:
+      Morning: "Il mattino, la luce del sole entra dalle finestre. Una nuova giornata inizia."
+      Afternoon: "Il pomeriggio, l'appartamento è tranquillo. I raggi del sole filtrano dalle tende."
+      Evening: "La sera, la luce calda delle lampade accoglie il rientro a casa."
       Night: "La notte, il tuo telefono illumina il buio. Messaggi in arrivo..."
+  
+  luna_home:
+    id: "luna_home"
+    name: "Casa di Luna"
+    description: "L'appartamento elegante di Luna. Libri dappertutto, silenzio assoluto."
+    visual_style: "luxury apartment, bookshelves, elegant furniture"
+    lighting: "warm indoor, soft lamp light"
+    
+    connected_to: ["bar_town"]
+    aliases: ["casa luna", "appartamento luna", "a casa di luna"]
+    
+    available_times: ["Evening", "Night"]
+    
+    available_characters: ["Luna"]
+    companion_can_follow: false
+    
+    time_descriptions:
+      Night: "L'appartamento di Luna è immerso nel silenzio. Solo il rumore delle pagine che si girano."

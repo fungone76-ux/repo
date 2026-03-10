@@ -15,6 +15,7 @@ import aiofiles
 
 from luna.core.config import get_settings
 from luna.media.builders import ImagePrompt
+from luna.media.aspect_ratio_director import AspectRatio, DirectorOfPhotography
 
 
 class ComfyUIClient:
@@ -134,9 +135,11 @@ class ComfyUIClient:
             workflow["3"]["inputs"]["text"] = prompt.negative
         
         # Node 7 = size
+        # V4.4 FIX: Disabled DoP - Always use 1152x1152 for consistency
+        print(f"[ComfyClient] Using fixed size 896x896 (DoP disabled)")
         if "7" in workflow:
-            workflow["7"]["inputs"]["width"] = prompt.width
-            workflow["7"]["inputs"]["height"] = prompt.height
+            workflow["7"]["inputs"]["width"] = 896
+            workflow["7"]["inputs"]["height"] = 896
         
         # Node 4 = seed
         if "4" in workflow:

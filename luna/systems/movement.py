@@ -50,7 +50,7 @@ class MovementHandler:
     ]
     
     # Prepositions to strip
-    PREPOSITIONS = ["a ", "in ", "da ", "verso ", "per ", "nel ", "nella ", "nello ", "nei ", "nelle ", "negli ", "al ", "alla ", "allo ", "ai ", "alle ", "agli ", "dal ", "dalla ", "dallo ", "dai ", "dalle ", "dagli "]
+    PREPOSITIONS = ["a ", "in ", "da ", "verso ", "per ", "nel ", "nella ", "nello ", "nei ", "nelle ", "negli ", "al ", "alla ", "allo ", "ai ", "alle ", "agli ", "dal ", "dalla ", "dallo ", "dai ", "dalle ", "dagli ", "all'", "all ", "dall'", "dall "]
     
     def __init__(
         self,
@@ -77,6 +77,15 @@ class MovementHandler:
         r'\?$',                # Ends with ?
         r'^mi\s+(?:consenti|lasci|permetti)',  # "Mi consenti di..."
         r'^(?:si|sì)\s+(?:posso|possiamo)',   # "Sì posso..."
+    ]
+    
+    # V4.4: Meta/subject indicators - words that suggest talking ABOUT something, not moving TO it
+    META_SUBJECTS = [
+        "matematica", "storia", "scienze", "fisica", "chimica", 
+        "letteratura", "filosofia", "arte", "musica", "sport",
+        "argomento", "tema", "discussione", "conversazione",
+        "inglese", "francese", "spagnolo", "tedesco",
+        "geografia", "biologia", "informatica", "tecnologia",
     ]
     
     def detect_movement_intent(self, user_input: str) -> bool:
@@ -172,6 +181,12 @@ class MovementHandler:
             if pos != -1:
                 target = target[:pos].strip()
         
+        # V4.4: Check if target is a meta-subject (e.g., "matematica" as subject, not location)
+        target_first_word = target.split()[0].lower() if target else ""
+        if target_first_word in self.META_SUBJECTS:
+            print(f"[Movement] Target '{target}' is a meta-subject (not a location), skipping")
+            return None
+        
         # V4.2: If target has multiple words and first word alone matches a location, use that
         # (e.g., "classe così studio" -> try "classe" if "classe così studio" doesn't exist)
         if " " in target:
@@ -211,6 +226,14 @@ class MovementHandler:
             return None
         
         target_lower = target_name.lower().strip()
+        
+        # V4.4 FIX: Prioritize player_home for "casa" variations
+        # This prevents "casa" matching "Casa di Maria" before "Casa Tua"
+        home_aliases = ['casa', 'a casa', 'home', 'casa mia', 'a casa mia', 'torno a casa', 'a casa mia']
+        if target_lower in home_aliases:
+            if 'player_home' in self.world.locations:
+                print(f"[Movement] Target '{target_name}' -> prioritized player_home")
+                return 'player_home'
         
         # V4.1: Skip if target is the active companion's name
         # (e.g., "entra Luna" should not move to "school_office_luna")
@@ -269,13 +292,18 @@ class MovementHandler:
         target_id = self.resolve_location(target_name)
         
         if not target_id:
-            print(f"[Movement] Could not resolve location from '{target_name}'")
-            return MovementResult(
-                success=False,
-                error_message=f"Non conosco questa location: '{target_name}'"
-            )
+            # V4.4 FIX: If target is not a valid location, treat as NOT movement
+            # This handles cases like "torniamo alla matematica" where "matematica" 
+            # refers to a subject, not a physical location
+            print(f"[Movement] Target '{target_name}' is not a valid location, treating as conversation")
+            return None
         
         print(f"[Movement] Resolved to location ID: {target_id}")
+        
+        # V4.5: Check if already at destination
+        if target_id == self.game_state.current_location:
+            print(f"[Movement] Already at {target_id}, treating as conversation")
+            return None
         
         # Execute movement via LocationManager
         print(f"[Movement] Calling LocationManager.move_to({target_id})")

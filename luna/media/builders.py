@@ -228,12 +228,14 @@ class ImagePrompt:
     positive: str
     negative: str
     width: int = 896
-    height: int = 1152
+    height: int = 896
     steps: int = 24
     cfg_scale: float = 7.0
     sampler: str = "dpmpp_2m"  # ComfyUI format, not A1111
     seed: Optional[int] = None
     composition: str = "medium_shot"
+    aspect_ratio: str = "square"  # landscape, portrait, square
+    dop_reasoning: str = ""  # Director of Photography reasoning
     lora_stack: List[Dict[str, Any]] = None
     
     def to_comfyui_workflow(self) -> Dict[str, Any]:
@@ -247,6 +249,8 @@ class ImagePrompt:
             "cfg": self.cfg_scale,
             "sampler_name": self.sampler,
             "seed": self.seed,
+            "aspect_ratio": self.aspect_ratio,
+            "dop_reasoning": self.dop_reasoning,
             "loras": self.lora_stack or [],
         }
 
@@ -592,7 +596,7 @@ class SingleCharacterBuilder(BasePromptBuilder):
             negative=negative,
             lora_stack=lora_stack,
             width=kwargs.get("width", 896),
-            height=kwargs.get("height", 1152),
+            height=kwargs.get("height", 896),
             sampler="euler",
             cfg_scale=7.0,
         )
@@ -723,7 +727,7 @@ class MultiCharacterBuilder(BasePromptBuilder):
             positive=positive,
             negative=NEGATIVE_PROMPTS["multi_character"],  # Enhanced negative
             lora_stack=unique_loras,
-            width=kwargs.get("width", 1024),
+            width=kwargs.get("width", 896),
             height=kwargs.get("height", 896),
             sampler="euler",
             cfg_scale=7.0,
@@ -805,7 +809,7 @@ class NPCBuilder(BasePromptBuilder):
             negative=NEGATIVE_PROMPTS["standard"],
             lora_stack=lora_stack,
             width=kwargs.get("width", 896),
-            height=kwargs.get("height", 1152),
+            height=kwargs.get("height", 896),
         )
 
 
@@ -858,10 +862,12 @@ class ImagePromptBuilder:
         character_name: str = "",
         outfit: Optional[Any] = None,
         width: int = 896,
-        height: int = 1152,
+        height: int = 896,
         base_prompt: Optional[str] = None,
         secondary_characters: Optional[List[Dict[str, str]]] = None,
         location_visual_style: Optional[str] = None,
+        aspect_ratio: str = "square",
+        dop_reasoning: str = "",
     ) -> ImagePrompt:
         """Build image prompt from basic parameters.
         
@@ -879,6 +885,8 @@ class ImagePromptBuilder:
             base_prompt: Optional explicit base prompt (from world YAML). If provided, overrides BASE_PROMPTS.
             secondary_characters: Optional list of secondary characters [{'name': 'X', 'base_prompt': 'Y'}]
             location_visual_style: V4: Visual style of current location (used when solo/no character)
+            aspect_ratio: Director of Photography choice (landscape, portrait, square)
+            dop_reasoning: Cinematographic reasoning for the aspect ratio choice
             
         Returns:
             ImagePrompt ready for generation
@@ -1043,6 +1051,10 @@ class ImagePromptBuilder:
         
         positive = ", ".join(filter(None, positive_parts))
         
+        # V4.4 FIX: Pantyhose feet coverage correction
+        # SD often renders feet as bare even with pantyhose in prompt
+        positive = self._fix_pantyhose_feet(positive)
+        
         # Build negative prompt
         negative = NEGATIVE_BASE
         
@@ -1052,4 +1064,39 @@ class ImagePromptBuilder:
             width=width,
             height=height,
             composition=composition,
+            aspect_ratio=aspect_ratio,
+            dop_reasoning=dop_reasoning,
         )
+    
+    def _fix_pantyhose_feet(self, prompt: str) -> str:
+        """Fix pantyhose prompt to ensure feet are covered.
+        
+        SD often renders feet as bare even when pantyhose/stockings are mentioned.
+        This adds explicit feet coverage tags when pantyhose are detected.
+        
+        Args:
+            prompt: Original prompt
+            
+        Returns:
+            Corrected prompt
+        """
+        prompt_lower = prompt.lower()
+        
+        # Check if pantyhose or stockings are mentioned
+        pantyhose_keywords = ['pantyhose', 'stockings', 'collant', 'tights']
+        has_pantyhose = any(kw in prompt_lower for kw in pantyhose_keywords)
+        
+        if has_pantyhose:
+            # Check if feet are already explicitly mentioned as covered
+            feet_covered_phrases = [
+                'feet covered', 'covered feet', 'pantyhose on feet',
+                'stockings on feet', 'feet in pantyhose', 'feet in stockings'
+            ]
+            already_fixed = any(phrase in prompt_lower for phrase in feet_covered_phrases)
+            
+            if not already_fixed:
+                # Add explicit feet coverage
+                prompt += ", feet covered by pantyhose, sheer pantyhose on feet"
+                print(f"[ImagePromptBuilder] Pantyhose detected - added explicit feet coverage")
+        
+        return prompt

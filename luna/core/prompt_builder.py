@@ -37,6 +37,7 @@ class PromptBuilder:
         story_context: str = "",
         quest_context: str = "",
         memory_context: str = "",
+        conversation_history: str = "",  # V4.4: Recent conversation
         location_manager: Optional[Any] = None,
         event_manager: Optional[Any] = None,
         multi_npc_context: str = "",
@@ -316,6 +317,20 @@ class PromptBuilder:
         
         # Messaging mode context (player at home, companion elsewhere)
         if is_messaging_mode:
+            # V4.5: Handle both dict and object schedules
+            location_str = "unknown"
+            if companion and hasattr(companion, 'schedule') and companion.schedule:
+                time_of_day = game_state.time_of_day
+                schedule = companion.schedule
+                if isinstance(schedule, dict):
+                    entry = schedule.get(time_of_day)
+                    if entry:
+                        location_str = entry.get('location', 'unknown') if isinstance(entry, dict) else getattr(entry, 'location', 'unknown')
+                else:
+                    entry = schedule.get(time_of_day)
+                    if entry:
+                        location_str = getattr(entry, 'location', 'unknown')
+            
             sections.extend([
                 "=== 📱 MESSAGING MODE ===",
                 "",
@@ -330,7 +345,7 @@ class PromptBuilder:
                 "4. Photos should be selfie-style or mirror shots (you're taking them yourself)",
                 "5. You can DECLINE photo requests if you want - you're not obligated",
                 "",
-                f"Your current location: {companion.schedule.get(game_state.time_of_day).location if companion and hasattr(companion, 'schedule') and companion.schedule.get(game_state.time_of_day) else 'unknown'}",
+                f"Your current location: {location_str}",
                 "",
             ])
         
@@ -444,6 +459,13 @@ class PromptBuilder:
         if memory_context:
             sections.extend([
                 memory_context,
+                "",
+            ])
+        
+        # V4.4: Recent conversation history (CRITICAL for continuity)
+        if conversation_history:
+            sections.extend([
+                conversation_history,
                 "",
             ])
         
@@ -685,6 +707,37 @@ class PromptBuilder:
             "- from_above: High angle, looking down",
             "- group: Multiple characters",
             "",
+            "=== 🎬 DIRECTOR OF PHOTOGRAPHY (DoP) - ASPECT RATIO ===",
+            "",
+            "Sei un Direttore della Fotografia (DoP) esperto con 20 anni di carriera nel cinema e nella fotografia di moda.",
+            "Decidi l'orientamento ottimale analizzando la composizione della scena:",
+            "",
+            "**LANDSCAPE (736x512) - Scelta per:**",
+            "- Panorami, ambienti ampi, orizzonti (aule, corridoi, parchi)",
+            "- Scene d'azione orizzontale (inseguimenti, fughe, camminate)",
+            "- Gruppi di personaggi (più persone in scena)",
+            "- Architetture che si espandono in larghezza",
+            "- Cinematografia epica, grandi scenografie",
+            "",
+            "**PORTRAIT (512x736) - Scelta per:**",
+            "- Ritratti classici, primi piani verticali",
+            "- Figure intere in piedi (full body standing)",
+            "- Soggetti singoli isolati (intimità verticale)",
+            "- Architetture alte (scale, torri, spazi verticali)",
+            "- Enfasi sulla verticalità del soggetto",
+            "",
+            "**SQUARE (1024x1024) - Scelta per:**",
+            "- Medium shot bilanciati (da vita su, cowboy shot)",
+            "- Conversazioni intime ma contestualizzate",
+            "- Scena equilibrata tra soggetto e ambiente",
+            "- Scelta sicura quando in dubbio (default versatile)",
+            "- Stile Instagram/ritratto moderno",
+            "",
+            "CRITICAL: Scegli OBBLIGATORIAMENTE UNO: 'landscape', 'portrait', o 'square'",
+            "aspect_ratio è un campo REQUIRED (obbligatorio) nel JSON!",
+            "Se non includi aspect_ratio, il sistema fallirà!",
+            "Spiega brevemente il ragionamento cinematografico in 'dop_reasoning'.",
+            "",
             "=== 📝 OUTPUT FORMAT (JSON - STRICT) ===",
             "",
             "CRITICAL: Respond with valid JSON only. NO markdown, NO extra text.",
@@ -693,11 +746,15 @@ class PromptBuilder:
             '  "text": "\\"Cosa vuoi?\\" *Luna incrocia le braccia.* \\"Non ho tutto il giorno.\\" *Il suo sguardo è freddo.* \\"Parla, o vattene.\\"",',
             '  "visual_en": "Medium shot, Luna standing by window, arms crossed, stern expression, classroom",',
             '  "tags_en": ["medium shot", "standing", "arms crossed", "classroom", "masterpiece"],',
+            '  "aspect_ratio": "square",',
+            '  "dop_reasoning": "Medium shot bilanciato per conversazione in classe - scelta versatile",',
             "",
             "{",
             '  "text": "Narration in Italian. Character speaks in quotes (\\"Dialogue\\"), actions in asterisks (*Action*).",',
             '  "visual_en": "Cowboy shot from below, Luna standing behind desk, legs crossed in sheer pantyhose, arms folded, classroom window light",',
             '  "tags_en": ["cowboy shot", "from below", "legs focus", "standing", "crossed legs", "classroom", "masterpiece"],',
+            '  "aspect_ratio": "landscape",',
+            '  "dop_reasoning": "Ampia inquadratura orizzontale per catturare l\'ambientazione dell\'aula",',
             '  "body_focus": "legs",',
             '  "approach_used": "standard",',
             '  "time_of_day": "Afternoon",',
@@ -710,12 +767,14 @@ class PromptBuilder:
             "- text (required): Narrative in Italian. Character MUST speak. Max 3 sentences. Be explicit/graphic when warranted.",
             "- visual_en (required): Visual description following Visual Director rules above",
             "- tags_en (required): Array of technical tags, minimum 5",
+            "- aspect_ratio (required): ONE OF ['landscape', 'portrait', 'square'] - DoP cinematographic decision",
+            "- dop_reasoning (required): Brief explanation of why this aspect ratio was chosen (Italian or English)",
             "- body_focus (optional): 'legs', 'ass', 'breasts', 'pussy', 'face', 'hands', etc.",
             "- secondary_characters (optional): Array of other character names visible in the scene. Use when multiple characters are present. Example: ['Maria', 'Stella']",
             "- approach_used (optional): 'standard', 'physical_action', 'question', 'choice'",
             "- time_of_day (optional): 'Morning', 'Afternoon', 'Evening', 'Night'",
             "- location (optional): Current location name",
-            "- affinity_change (optional): Integer like +2 or -1 (MUST change every turn)",
+            "- affinity_change (REQUIRED): {'Luna': +2} or {'Luna': -1} - MUST change EVERY turn based on player behavior",
             "- current_outfit (optional): Outfit key if changed, OR full visual description if player removed/altered clothes (e.g. 'black dress, barefoot')",
             "",
             "=== EXAMPLE (Body Focus) ===",
@@ -724,8 +783,10 @@ class PromptBuilder:
             '  "text": "Luna nota il tuo sguardo. \"Ti piacciono?\" *incrocia le gambe.* \"Sono calze di seta... costano care.\" *Il tono è provocante.*",',
             '  "visual_en": "Cowboy shot from below, Luna standing behind desk, legs crossed in sheer black pantyhose, classroom floor visible",',
             '  "tags_en": ["cowboy shot", "from below", "legs focus", "pantyhose", "standing", "crossed legs", "classroom"],',
+            '  "aspect_ratio": "portrait",',
+            '  "dop_reasoning": "Inquadratura verticale per enfatizzare le gambe e la figura intera",',
             '  "body_focus": "legs",',
-            '  "affinity_change": 2',
+            '  "affinity_change": {"Luna": 2}',
             "}",
             "",
             "=== ❌ COMMON MISTAKES ===",

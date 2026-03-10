@@ -1,5 +1,286 @@
 # Changelog - Luna RPG v4
 
+## [2026-03-09] - V4.5 Remote Communication, Invitations & Outfit System
+
+### 📱 Comunicazione Remota (Phone/Message)
+
+**Nuovo File:** `src/luna/systems/remote_communication.py`
+
+Sistema completo per comunicare con NPC via telefono/messaggi:
+
+- **Pattern detection:** Riconosce "scrivo a X", "mando messaggio a X", "chiamo X", "mandami..."
+- **Auto-switch companion:** Il target diventa companion attivo automaticamente
+- **Location corretta:** L'immagine mostra il target nella sua location (da schedule)
+- **Context prompt:** Aggiunge "Stai ricevendo un messaggio..." al system prompt
+- **Affinity & Personality:** Funzionano correttamente sul target remoto
+- **Visual EN override:** Sovrascrive la descrizione scena generata dall'LLM per matchare la location reale del NPC
+
+**Esempio:**
+```
+Player (a casa): "Scrivo a Luna, mi manchi"
+→ Companion diventa Luna
+→ Luna risponde dal suo ufficio
+→ Affinity calcolata con Luna
+→ Immagine generata nell'ufficio di Luna (non in classe!)
+```
+
+### 🏠 Sistema di Inviti a Casa
+
+**Nuovo File:** `src/luna/systems/invitation_manager.py`
+
+Invita NPC a casa tua via messaggio:
+
+1. **Invio:** "Vieni a casa mia stasera" → registrato con tempo di arrivo
+2. **Accettazione:** NPC risponde positivamente ("Va bene", "Ok", "Ci sto")
+3. **Attesa:** Invito in sospeso fino al cambio fase
+4. **Arrivo:** Messaggio narrativo:
+   > *Mentre ti rilassi in salotto, senti suonare il campanello. Aprendo la porta, trovi [NPC] che è venuta come promesso.*
+
+**Tempi supportati:** mattina, pomeriggio, sera, notte
+
+### 👕 Outfit Adattivo per Location
+
+**File:** `turn_orchestrator.py` - Metodo `_update_outfit_for_context()`
+
+L'outfit del companion cambia automaticamente in base alla location:
+
+| Location | Luna | Stella | Maria |
+|----------|------|--------|-------|
+| Palestra | `gym_teacher` | `cheerleader` | - |
+| Scuola/Ufficio | `teacher_suit` | `uniform_mod` | `cleaning_uniform` |
+| Casa (notte) | `nightwear` | `pajamas` | `home` |
+| Casa (giorno) | `casual` | `pajamas` | `home` |
+| Piscina/Spiaggia | - | `swimsuit` | - |
+
+**Mapping Schedule:**
+- `teacher_formal` → `teacher_suit`
+- `teacher_strict` → `strict_teacher`
+
+### ⏰ Messaggio Narrativo Cambio Fase
+
+Quando un companion se ne va al cambio fase:
+
+```
+⏰ La campanella suona. È pomeriggio.
+
+*Luna raccoglie le sue cose.* "Devo andare in ufficio a correggere i compiti."
+
+[La Luna è andata in: Ufficio Professoresse]
+```
+
+### 👥 Regole di Follow Migliorate
+
+Quando ti sposti:
+
+**Un companion ti segue SOLO se:**
+- Affinity ≥ 65
+- È stato ESPLICITAMENTE INVITATO ("vieni con me", "seguimi")
+- Non è un NPC temporaneo
+
+**Altrimenti:** rimane indietro, switch automatico a SOLO
+
+### 🧹 Pulizia Memoria Nuova Partita
+
+Quando inizi una nuova partita:
+- **SQLite:** Tutti i messaggi e fatti cancellati
+- **ChromaDB:** Memoria semantica cancellata
+- **Isolamento:** Nuovo session_id garantisce partita pulita
+
+### 🔧 Affinity Calcolata da Python
+
+**Modifica:** L'affinity è ora calcolata deterministicamente da Python invece che dall'LLM:
+
+```python
+calculator = get_calculator()
+affinity_result = calculator.calculate(
+    user_input=user_input,
+    companion_name=game_state.active_companion,
+    turn_count=game_state.turn_count,
+)
+```
+
+**Vantaggi:** Prevedibile, bilanciata, funziona in comunicazione remota
+
+### 🐛 Bug Fix V4.5
+
+- **Movement "blocked":** Non blocca più quando sei già alla location target
+- **Phase Manager State:** `_turns_in_phase` ora salvato/caricato correttamente
+- **Personality Impression:** `analyze_with_llm` non sovrascrive più i cambiamenti quando fallisce
+- **MultiNPC Location:** Filtra NPC per location usando `companion.schedule`
+- **Schedule Access:** Fix errore "dict object has no attribute schedule"
+
+### 📁 Files Modificati V4.5
+
+| File | Modifica |
+|------|----------|
+| `remote_communication.py` | **NUOVO** - Sistema comunicazione remota |
+| `invitation_manager.py` | **NUOVO** - Sistema inviti NPC |
+| `turn_orchestrator.py` | Integrazione V4.5, outfit adattivo, affinity Python |
+| `movement.py` | Fix "blocked" quando già alla location |
+| `memory.py` | Metodo `clear()` completo |
+| `engine.py` | Pulizia memoria su nuova partita, Phase Manager state |
+| `phase_manager.py` | `to_dict()`/`from_dict()` per salvare stato |
+| `personality.py` | Fix impression change overwrite |
+| `multi_npc/manager.py` | Fix accesso a `companion.schedule` |
+| `affinity_calculator.py` | Log debug per pattern matching |
+| `prompt_builder.py` | Fix accesso a schedule come dict |
+
+### 📝 TODO per V4.6
+
+- **Memory Isolation:** I messaggi devono essere isolati per companion (Stella non deve vedere i messaggi a Luna)
+
+### 📱 Comunicazione Remota (Phone/Message)
+
+**Nuovo File:** `src/luna/systems/remote_communication.py`
+
+Sistema completo per comunicare con NPC via telefono/messaggi:
+
+- **Pattern detection:** Riconosce "scrivo a X", "mando messaggio a X", "chiamo X", "mandami..."
+- **Auto-switch companion:** Il target diventa companion attivo automaticamente
+- **Location corretta:** L'immagine mostra il target nella sua location (da schedule)
+- **Context prompt:** Aggiunge "Stai ricevendo un messaggio..." al system prompt
+- **Affinity & Personality:** Funzionano correttamente sul target remoto
+
+**Esempio:**
+```
+Player (a casa): "Scrivo a Luna, mi manchi"
+→ Companion diventa Luna
+→ Luna risponde dal suo ufficio
+→ Affinity calcolata con Luna
+```
+
+### 🏠 Sistema di Inviti a Casa
+
+**Nuovo File:** `src/luna/systems/invitation_manager.py`
+
+Invita NPC a casa tua via messaggio:
+
+1. **Invio:** "Vieni a casa mia stasera" → registrato con tempo di arrivo
+2. **Accettazione:** NPC risponde positivamente ("Va bene", "Ok", "Ci sto")
+3. **Attesa:** Invito in sospeso fino al cambio fase
+4. **Arrivo:** Messaggio narrativo:
+   > *Mentre ti rilassi in salotto, senti suonare il campanello. Aprendo la porta, trovi [NPC] che è venuta come promesso.*
+
+**Tempi supportati:** mattina, pomeriggio, sera, notte
+
+### ⏰ Messaggio Narrativo Cambio Fase
+
+Quando un companion se ne va al cambio fase:
+
+```
+⏰ La campanella suona. È pomeriggio.
+
+*Luna raccoglie le sue cose.* "Devo andare in ufficio a correggere i compiti."
+
+[La Luna è andata in: Ufficio Professoresse]
+```
+
+### 👥 Regole di Follow Migliorate
+
+Quando ti sposti:
+
+**Un companion ti segue SOLO se:**
+- Affinity ≥ 65
+- È stato ESPLICITAMENTE INVITATO ("vieni con me", "seguimi")
+- Non è un NPC temporaneo
+
+**Altrimenti:** rimane indietro, switch automatico a SOLO
+
+### 🧹 Pulizia Memoria Nuova Partita
+
+Quando inizi una nuova partita:
+- **SQLite:** Tutti i messaggi e fatti cancellati
+- **ChromaDB:** Memoria semantica cancellata
+- **Isolamento:** Nuovo session_id garantisce partita pulita
+
+### 🔧 Affinity Calcolata da Python
+
+**Modifica:** L'affinity è ora calcolata deterministicamente da Python invece che dall'LLM:
+
+```python
+calculator = get_calculator()
+affinity_result = calculator.calculate(
+    user_input=user_input,
+    companion_name=game_state.active_companion,
+    turn_count=game_state.turn_count,
+)
+```
+
+**Vantaggi:** Prevedibile, bilanciata, funziona in comunicazione remota
+
+### 📁 Files Modificati V4.5
+
+| File | Modifica |
+|------|----------|
+| `remote_communication.py` | **NUOVO** - Sistema comunicazione remota |
+| `invitation_manager.py` | **NUOVO** - Sistema inviti NPC |
+| `turn_orchestrator.py` | Integrazione V4.5, affinity Python |
+| `memory.py` | Metodo `clear()` completo |
+| `engine.py` | Pulizia memoria su nuova partita |
+
+---
+
+## [2026-03-08] - Director of Photography & Bug Fixes
+
+### 🎬 Director of Photography (DoP) System - NEW!
+
+#### Aspect Ratio Dinamico per Immagini e Video
+- **File:** `src/luna/media/aspect_ratio_director.py` (NUOVO!)
+- **Descrizione:** Sistema che simula un Direttore della Fotografia esperto per decidere l'orientamento ottimale delle immagini
+- **Tre modalità supportate:**
+  - `landscape` (736x512): Panorami, ambienti ampi, scene d'azione orizzontale, gruppi
+  - `portrait` (512x736): Ritratti, figure intere, architetture verticali, primi piani
+  - `square` (1024x1024): Medium shot bilanciati, default versatile
+- **Vincolo tecnico:** Tutte le dimensioni divisibili per 16 (compatibilità WanVideo)
+- **Integrazione:**
+  - Prompt LLM aggiornato con sezione DoP che richiede aspect_ratio e ragionamento
+  - `ImagePrompt` e `LLMResponse` estesi con campi `aspect_ratio` e `dop_reasoning`
+  - `ComfyClient` mappa aspect_ratio a dimensioni concrete nel workflow
+  - `VideoClient` eredita proporzioni dall'immagine sorgente per coerenza
+
+#### Files Modificati per DoP:
+- `src/luna/media/aspect_ratio_director.py` (NUOVO - 250 righe)
+- `src/luna/core/models.py` - Aggiunti campi aspect_ratio a ImagePrompt e LLMResponse
+- `src/luna/media/builders.py` - ImagePromptBuilder supporta aspect_ratio
+- `src/luna/media/pipeline.py` - MediaPipeline passa aspect_ratio ai generatori
+- `src/luna/media/comfy_client.py` - Applica dimensioni dinamiche al workflow
+- `src/luna/media/video_client.py` - Preserva aspect ratio nel video
+- `src/luna/core/prompt_builder.py` - Sezione DoP nel system prompt
+- `src/luna/systems/turn_orchestrator.py` - Passa aspect_ratio dalla risposta LLM
+
+### 🔧 Bug Fixes - V4.3.1
+
+#### 1. Fix Caricamento Partita - Affinity & Personality
+- **Problema:** Caricando una partita, affinity e personality partivano da zero
+- **Causa:** I valori venivano caricati nel game state ma non sincronizzati con UI e personality engine
+- **Fix in `main_window.py`:**
+  - `_update_companion_list()` ora aggiorna le barre affinity dai valori del game state
+  - `_load_game()` carica esplicitamente i personality states dal database
+  - `_load_game()` carica esplicitamente i quest states dal database
+  - Aggiunto `_update_event_widget()` a `_update_all_widgets()`
+
+#### 2. Fix Eventi Globali in UI
+- **Problema:** Gli eventi globali attivi non venivano mostrati nella finestra di sinistra dopo il caricamento
+- **Causa:** Il callback `on_event_changed` viene chiamato solo quando un evento CAMBIA, non quando viene caricato
+- **Fix in `main_window.py`:**
+  - Dopo il caricamento, sincronizza il widget con `event_manager.get_primary_event()`
+  - Aggiunto metodo `_update_event_widget()` per aggiornamento manuale
+  - Chiamata sincronizzazione iniziale in `start_game()` e `_load_game()`
+
+#### 3. Fix Quest Status Enum vs String
+- **Problema:** `AttributeError: 'str' object has no attribute 'value'` in `state_memory.py`
+- **Causa:** In alcuni casi `quest_state.status` era già una stringa invece di un enum
+- **Fix in `state_memory.py`:**
+  - Aggiunto controllo `hasattr(quest_state.status, 'value')` prima di accedere a `.value`
+  - Fallback a `str(quest_state.status)` se già stringa
+  - Pattern coerente con altri enum nel codebase
+
+### 📁 Files Modificati - Bug Fixes:
+- `src/luna/ui/main_window.py` - Fix caricamento affinity, personality, eventi
+- `src/luna/systems/state_memory.py` - Fix quest status enum/string handling
+
+---
+
 ## [2026-03-07] - Modular Architecture V4.3
 
 ### 🏗️ Refactoring - V4.3

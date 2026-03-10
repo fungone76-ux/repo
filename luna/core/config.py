@@ -129,14 +129,14 @@ class Settings(BaseSettings):
     
     # Image settings
     image_width: int = Field(
-        default=896,
+        default=1024,
         ge=512,
         le=2048,
         description="Image generation width",
     )
     
     image_height: int = Field(
-        default=1152,
+        default=1024,
         ge=512,
         le=2048,
         description="Image generation height",

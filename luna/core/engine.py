@@ -20,7 +20,7 @@ import logging
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from luna.core.config import get_settings, get_user_prefs
 from luna.core.database import get_db_manager
@@ -183,6 +183,25 @@ class GameEngine:
         # V3.2: NPC cache for consistent secondary characters
         # Maps template_id -> companion_name to ensure same NPC always appears
         self._npc_template_cache: Dict[str, str] = {}
+        
+        # V4.5: UI callback for time changes
+        self._ui_time_change_callback: Optional[Callable[[Any, str], None]] = None
+        
+        # V4.3: Expose tracer for TurnOrchestrator and other components
+        self.tracer = tracer
+    
+    # ========================================================================
+    # UI Callback Registration
+    # ========================================================================
+    
+    def set_ui_time_change_callback(self, callback: Callable[[Any, str], None]) -> None:
+        """Register UI callback for time change notifications.
+        
+        Args:
+            callback: Function(new_time, message) to call when time changes
+        """
+        self._ui_time_change_callback = callback
+        print(f"[GameEngine] UI time change callback registered")
     
     # ========================================================================
     # Lifecycle
@@ -235,6 +254,12 @@ class GameEngine:
                 config=PhaseConfig(turns_per_phase=8),  # 8 turni per fase
                 on_phase_change=self._on_phase_change,
             )
+            
+            # V4.5: Load phase manager state if exists
+            phase_state = game_state.flags.get("_phase_manager_state")
+            if phase_state:
+                self.phase_manager.from_dict(phase_state)
+                print(f"[GameEngine] Loaded phase manager state: {phase_state}")
             
             # Set starting location if not already set
             if game_state.current_location == "Unknown" and self.world.locations:
@@ -354,6 +379,12 @@ class GameEngine:
             storage_path=self.settings.worlds_path.parent / "storage",
             llm_manager=self.llm_manager,  # V4: Pass LLM for intelligent summarization
         )
+        
+        # V4.5 FIX: For new games, ensure memory is completely empty
+        # Clear any existing data for this session (safety check)
+        print(f"[GameEngine] New game - clearing memory for session {self._session_id}")
+        await self.memory_manager.clear()
+        
         await self.memory_manager.load()
         
         # V4 Refactor: Initialize unified state-memory manager
@@ -367,6 +398,10 @@ class GameEngine:
             story_director=self.story_director,
             personality_engine=self.personality_engine,
         )
+        
+        # V4.3: Initialize TurnOrchestrator
+        from luna.systems.turn_orchestrator import TurnOrchestrator
+        self.turn_orchestrator = TurnOrchestrator(self)
         
         self._initialized = True
         print(f"[GameEngine] Initialized session {self._session_id}")
@@ -528,6 +563,38 @@ class GameEngine:
             storage_path=self.settings.worlds_path.parent / "storage",
         )
         await self.memory_manager.load()
+        
+        # V4.1: Initialize Time Manager (NEEDED for loaded games too)
+        from luna.systems.time_manager import TimeManager, TimeConfig
+        self.time_manager = TimeManager(
+            game_state=game_state,
+            config=TimeConfig(
+                turns_per_period=5,
+                enable_auto_advance=True,
+                enable_rest_commands=True,
+                enable_deadlines=True,
+            ),
+            on_time_change=self._on_time_change,
+        )
+        
+        # V4.1: Initialize Schedule Manager (NPC routines)
+        from luna.systems.schedule_manager import ScheduleManager
+        self.schedule_manager = ScheduleManager(game_state=game_state, world=self.world)
+        
+        # V4.2: Initialize Phase Manager (8 turns per phase)
+        from luna.systems.phase_manager import PhaseManager, PhaseConfig
+        self.phase_manager = PhaseManager(
+            game_state=game_state,
+            schedule_manager=self.schedule_manager,
+            config=PhaseConfig(turns_per_phase=8),
+            on_phase_change=self._on_phase_change,
+        )
+        
+        # V4.5: Load phase manager state if exists
+        phase_state = game_state.flags.get("_phase_manager_state")
+        if phase_state:
+            self.phase_manager.from_dict(phase_state)
+            print(f"[GameEngine] Loaded phase manager state: {phase_state}")
         
         # V4 Refactor: Initialize unified state-memory manager
         self.state_memory = StateMemoryManager(
@@ -1499,6 +1566,10 @@ class GameEngine:
         # -------------------------------------------------------------------
         # STEP 9: Save State (V4 Refactor: Unified state-memory manager)
         # -------------------------------------------------------------------
+        # V4.5: Save phase manager state before saving game state
+        if self.phase_manager:
+            game_state.flags["_phase_manager_state"] = self.phase_manager.to_dict()
+        
         await self.state_memory.save_all()
         
         # -------------------------------------------------------------------
@@ -1710,6 +1781,13 @@ class GameEngine:
         print(f"[GameEngine] Time changed to {time_str}: {message}")
         # Message will be added to result in process_turn
         self._pending_time_message = message
+        
+        # V4.5: Notify UI if callback registered
+        if self._ui_time_change_callback:
+            try:
+                self._ui_time_change_callback(new_time, message)
+            except Exception as e:
+                print(f"[GameEngine] Error in UI time change callback: {e}")
     
     def _on_phase_change(self, result: 'PhaseChangeResult') -> None:
         """Callback when phase changes (8 turns passed).

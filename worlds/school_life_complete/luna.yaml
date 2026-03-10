@@ -57,6 +57,10 @@ companion:
       sd_prompt: "elegant lingerie set, black lace bra and panties, garter belt with stockings, mature feminine body, confident pose, bedroom setting, soft lighting, seductive expression, refined luxury intimate apparel"
       special: true
     
+    nightwear:
+      description: "Comfortable nightwear for sleeping"
+      sd_prompt: "comfortable nightwear, sleepwear"
+    
     nude:
       description: "Nude, mature body natural, confident"
       sd_prompt: "nude mature woman, natural body with soft curves, confident pose, soft lighting, bedroom or private setting, elegant nudity, dignified sensual pose, mature beauty"
@@ -165,8 +169,8 @@ companion:
     
     Night:
       preferred_location: "luna_home"
-      outfit: "casual"
-      activity: "A casa sola, legge, pensa"
+      outfit: "nightwear"
+      activity: "A casa sola, legge, pensa in vestaglia elegante"
 
 # ============================================================
 # QUESTS - LUNA

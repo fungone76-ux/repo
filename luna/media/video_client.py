@@ -8,10 +8,11 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import aiohttp
 import aiofiles
+from PIL import Image
 
 from luna.core.config import get_settings
 from luna.ai.manager import get_llm_manager
@@ -54,6 +55,10 @@ class VideoClient:
                 return None
             print(f"[Video] Image uploaded: {uploaded_filename}")
             
+            # 1.5 Get image dimensions (for aspect ratio preservation)
+            img_width, img_height = self._get_image_dimensions(image_path)
+            print(f"[Video] Source image dimensions: {img_width}x{img_height}")
+            
             # 2. Generate temporal prompt
             print(f"[Video] Generating temporal prompt from: '{user_action}'")
             temporal_prompt = await self._build_temporal_prompt(user_action, character_name)
@@ -64,7 +69,7 @@ class VideoClient:
             
             # 4. Load and patch workflow
             workflow = await self._load_workflow()
-            self._patch_workflow(workflow, uploaded_filename, temporal_prompt, character_name)
+            self._patch_workflow(workflow, uploaded_filename, temporal_prompt, character_name, img_width, img_height)
             
             # 5. Submit
             print(f"[Video] Submitting to Wan2.1...")
@@ -222,14 +227,31 @@ Output:
             content = await f.read()
             return json.loads(content)
     
+    def _get_image_dimensions(self, image_path: Path) -> Tuple[int, int]:
+        """Get image dimensions using PIL."""
+        try:
+            with Image.open(image_path) as img:
+                return img.size
+        except Exception as e:
+            print(f"[Video] Warning: Could not read image dimensions: {e}")
+            # Default to square if can't read
+            return 1024, 1024
+    
     def _patch_workflow(
         self,
         workflow: Dict[str, Any],
         image_filename: str,
         temporal_prompt: str,
         character_name: str,
+        img_width: int = 1024,
+        img_height: int = 1024,
     ) -> None:
         """Patch workflow with runtime values."""
+        # Calculate video dimensions preserving aspect ratio
+        # Wan2.1 works best with specific resolutions, but we preserve aspect ratio
+        video_width, video_height = self._calculate_video_dimensions(img_width, img_height)
+        print(f"[Video] Setting video dimensions: {video_width}x{video_height} (from {img_width}x{img_height})")
+        
         for node_id, node in workflow.items():
             if not isinstance(node, dict):
                 continue
@@ -241,6 +263,22 @@ Output:
             if class_type == "LoadImage":
                 inputs["image"] = image_filename
                 print(f"[Video] Set image: {image_filename}")
+            
+            # Patch ImageResize node (node 9) - V4.4: 896x896
+            elif class_type == "ImageResizeKJv2":
+                inputs["width"] = 896
+                inputs["height"] = 896
+                inputs["keep_proportion"] = "resize"  # Force exact size
+                print(f"[Video] Set resize to 896x896")
+            
+            # Patch EmptyLatentImage or similar size nodes
+            elif class_type in ["EmptyLatentImage", "WanImageToVideo", "ImageOnlyWorkflow"]:
+                if "width" in inputs:
+                    inputs["width"] = video_width
+                if "height" in inputs:
+                    inputs["height"] = video_height
+                if class_type == "WanImageToVideo":
+                    print(f"[Video] WanImageToVideo set to {video_width}x{video_height}")
             
             # Patch positive prompt (CLIPTextEncode with "positive" in meta or longer text)
             elif class_type == "CLIPTextEncode":
@@ -265,6 +303,20 @@ Output:
                     prefix = character_name or "video"
                     inputs["filename_prefix"] = f"{prefix}_Wan2.1"
                     print(f"[Video] Set filename prefix: {prefix}_Wan2.1")
+                # V4.4: Enable ping-pong animation (forward then backward)
+                if "pingpong" in inputs:
+                    inputs["pingpong"] = True
+                    print(f"[Video] Ping-pong animation enabled")
+    
+    def _calculate_video_dimensions(self, img_width: int, img_height: int) -> Tuple[int, int]:
+        """Calculate video dimensions.
+        
+        V4.4 FIX: Disabled aspect ratio preservation - Always use 1152x1152
+        for consistency with image generation.
+        """
+        # V4.4: Fixed 896x896 for all videos (matching image size)
+        # 896 is divisible by 16 (WanVideo requirement): 896 / 16 = 56
+        return 896, 896
     
     async def _submit_workflow(
         self,

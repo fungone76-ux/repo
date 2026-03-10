@@ -207,6 +207,7 @@ class AffinityCalculator:
             AffinityChange with delta and reason
         """
         input_lower = user_input.lower()
+        print(f"[AffinityCalculator] Calculating for input: '{input_lower[:50]}...'")
         total_delta = 0
         reasons = []
         is_positive = False
@@ -244,6 +245,8 @@ class AffinityCalculator:
                 reasons.append(f"{delta} ({matched})")
                 is_positive = False
                 # Don't break - negative can stack
+        
+        print(f"[AffinityCalculator] Matched reasons: {reasons}, total_delta: {total_delta}")
         
         # If nothing matched, neutral interaction
         if total_delta == 0:

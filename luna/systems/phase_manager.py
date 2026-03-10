@@ -11,7 +11,7 @@ Extracted to new file for clean architecture.
 """
 from __future__ import annotations
 
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
 from luna.core.models import TimeOfDay, GameState
@@ -292,6 +292,26 @@ class PhaseManager:
             self.freeze(f"⏸️ {reason}")
             return True
         return False
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Save phase manager state to dict."""
+        return {
+            "turns_in_phase": self._turns_in_phase,
+            "frozen": self._frozen,
+            "freeze_reason": self._freeze_reason,
+            "pending_phase_change": self._pending_phase_change,
+        }
+    
+    def from_dict(self, data: Dict[str, Any]) -> None:
+        """Load phase manager state from dict."""
+        self._turns_in_phase = data.get("turns_in_phase", 0)
+        self._frozen = data.get("frozen", False)
+        self._freeze_reason = data.get("freeze_reason", "")
+        self._pending_phase_change = data.get("pending_phase_change", False)
+    
+    def set_game_state(self, game_state: GameState) -> None:
+        """Update game state reference (needed after loading)."""
+        self.game_state = game_state
 
 
 @dataclass

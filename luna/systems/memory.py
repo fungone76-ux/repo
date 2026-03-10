@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from sqlalchemy import delete
+
 from luna.core.database import DatabaseManager
 from luna.core.models import ConversationMessage, MemoryEntry
 
@@ -821,16 +823,50 @@ Summary:"""
         ]
     
     async def clear(self) -> None:
-        """Clear all memories (use with caution)."""
+        """Clear all memories for this session (use with caution).
+        
+        V4.5: Used when starting a new game to ensure clean slate.
+        """
+        print(f"[Memory] Clearing all data for session {self.session_id}")
+        
+        # Clear in-memory caches
         self._recent_messages.clear()
         self._facts.clear()
         
-        # Clear semantic store
-        if self._semantic_store:
-            self._semantic_store.delete_session()
+        # Clear semantic store (ChromaDB)
+        if self._semantic_store and self._semantic_store.is_available:
+            try:
+                self._semantic_store.delete_session()
+                print(f"[Memory] Semantic memory cleared")
+            except Exception as e:
+                print(f"[Memory] Note: Could not clear semantic memory: {e}")
+        
+        # Clear database records (SQLite)
+        try:
+            async with self.db.session() as db_session:
+                # Delete messages
+                from luna.core.database import ConversationMessageModel
+                await db_session.execute(
+                    delete(ConversationMessageModel).where(
+                        ConversationMessageModel.session_id == self.session_id
+                    )
+                )
+                
+                # Delete facts
+                from luna.core.database import MemoryEntryModel
+                await db_session.execute(
+                    delete(MemoryEntryModel).where(
+                        MemoryEntryModel.session_id == self.session_id
+                    )
+                )
+                
+                await db_session.commit()
+                print(f"[Memory] Database records cleared")
+        except Exception as e:
+            print(f"[Memory] Warning: Could not clear database: {e}")
         
         self._loaded = False
-        logger.info("Memory cleared")
+        print(f"[Memory] All memory cleared for session {self.session_id}")
     
     @property
     def stats(self) -> Dict[str, Any]:

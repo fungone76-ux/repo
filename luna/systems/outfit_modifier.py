@@ -53,20 +53,37 @@ class OutfitModifierSystem:
     # ===================================================================
     
     PATTERNS: Dict[str, Dict[str, List[str]]] = {
-        # SHOES
+        # SHOES - Espansi con molti più pattern
         "shoes": {
             "remove": [
+                # Pattern base
                 r"\b(senza\s+scarp[ae]|scalz[ao]|piedi\s+nudi|nud[ao]\s+ai\s+piedi)\b",
                 r"\b(tol[gt]a?\s+(le\s+)?scarp[ae]|levat[ae]?\s+(le\s+)?scarp[ae]|sfilat[ae]?\s+(le\s+)?scarp[ae])\b",
                 r"\b(tol[gt]a?\s+(una\s+)?scarpa|levat[ae]?\s+(una\s+)?scarpa)\b",
                 r"\b(rimoss[ae]?\s+(le\s+)?scarpe|togli\s+(le\s+)?scarpe)\b",
                 r"\b(scarp[ae]\s+(tolte?|levate?|rimosse?)|hai\s+tolto\s+(le\s+|una\s+)?scarp[ae])\b",
                 r"\b(si\s+[eè]\s+tolta\s+(una\s+|la\s+)?scarpa)\b",
+                # Pattern narrativi (LLM response)
+                r"\b(si\s+sfil[ao]\s+(le\s+)?scarp[ae]|sfil[ao]\s+(le\s+)?scarp[ae])\b",
+                r"\b(si\s+leva\s+(le\s+)?scarp[ae]|lev[aà]\s+(le\s+)?scarp[ae])\b",
+                r"\b(scarp[ae]\s+(sfilate|levarse|torsesi)|lasci[ao]\s+(le\s+)?scarp[ae])\b",
+                r"\b(piedi\s+nud[io]|resta\s+scalz[ao]|rimane\s+scalz[ao])\b",
+                r"\b(si\s+liber[ao]\s+(dei\s+piedi|dai\s+piedi)|liber[ao]\s+i\s+piedi)\b",
+                r"\b(calz[ae]?\s+(tolte?|sfilate?)|calzini\s+(tolti?|sfilati?))\b",
+                r"\b(tacchi\s+(tolti?|sfilati?)|si\s+togli[eè]\s+i\s+tacchi)\b",
             ],
             "add": [
+                # Pattern base
                 r"\b(rimett[aoe]?\s+(le\s+)?scarpe|indoss[aoe]?\s+(le\s+)?scarpe|mett[aoe]?\s+(le\s+)?scarpe)\b",
                 r"\b(rimett[aoe]?\s+(una\s+)?scarpa|indoss[aoe]?\s+(una\s+)?scarpa)\b",
                 r"\b(scarpe\s+(ai\s+piedi|rimesse|indossate))\b",
+                # Pattern narrativi (LLM response)
+                r"\b(si\s+rimett[aoe]?\s+(le\s+)?scarp[ae]|rimett[aoe]?\s+(le\s+)?scarp[ae])\b",
+                r"\b(scarp[ae]\s+(rimesse|rimettersi|rimesse))\b",
+                r"\b(indoss[ao]\s+di\s+nuovo\s+(le\s+)?scarp[ae])\b",
+                r"\b(riprende\s+(le\s+)?scarp[ae]|prende\s+(le\s+)?scarp[ae])\b",
+                r"\b(si\s+veste\s+(le\s+)?scarp[ae]|calz[ao]\s+(le\s+)?scarp[ae])\b",
+                r"\b(mette\s+(i\s+)?tacchi|indossa\s+(i\s+)?tacchi)\b",
             ],
             "values": {"remove": "barefoot", "add": "elegant high heels"}
         },
@@ -87,7 +104,7 @@ class OutfitModifierSystem:
             "values": {"remove": "none", "add": "blue blazer"}
         },
         
-        # TOP / SHIRT
+        # TOP / SHIRT - Espansi
         "top": {
             "unbutton": [
                 r"\b(camicia\s+sbottonata|camici[ao]\s+apert[ao]|scollatura\s+aperta)\b",
@@ -96,15 +113,37 @@ class OutfitModifierSystem:
                 r"\b(downblouse|scollatura\s+profonda|scollo\s+a\s+V\s+aperto)\b",
                 r"\b(camicia\s+che\s+scivola|spalle\s+scoperte|scollatura\s+laterale)\b",
                 r"\b(sideboob\s+della\s+camicia|seno\s+laterale\s+visibile)\b",
+                # Pattern narrativi LLM
+                r"\b(si\s+sbotton[a]\s+(la\s+)?camicia|sbotton[a]\s+(la\s+)?camicia)\b",
+                r"\b(apr[a]\s+(la\s+)?camicia|apr[a]\s+i\s+bottoni)\b",
+                r"\b(camicia\s+(aperta|sbottonata|slacciata))\b",
+                r"\b(bottoni\s+della\s+camicia\s+aperti)\b",
             ],
             "remove": [
                 r"\b(senza\s+(camicia|maglia|top|blusa)|camicia\s+tolta)\b",
                 r"\b(tol[gt]a?\s+(la\s+)?(camicia|maglia|top)|levat[ae]?\s+(la\s+)?(camicia|maglia))\b",
                 r"\b(nud[ao]\s+(dal\s+busto\s+in\s+su|in\s+alto)|torace\s+nudo)\b",
+                # Pattern narrativi LLM
+                r"\b(si\s+togli[eè]\s+(la\s+)?camicia|toglie\s+(la\s+)?camicia)\b",
+                r"\b(si\s+togli[eè]\s+(il\s+)?top|toglie\s+(il\s+)?top)\b",
+                r"\b(si\s+togli[eè]\s+(la\s+)?maglia|toglie\s+(la\s+)?maglia)\b",
+                r"\b(camicia\s+(tolta|sfilata|levata|rimossa))\b",
+                r"\b(top\s+(tolto|sfilato|levato|rimosso))\b",
+                r"\b(maglia\s+(tolta|sfilata|levata|rimossa))\b",
+                r"\b(senza\s+(la\s+)?camicia|rimane\s+senza\s+camicia)\b",
+                r"\b(torace\s+nudo|seno\s+nudo|seni\s+nudi)\b",
+                r"\b(si\s+spogli[a]\s+(del\s+)?top|spogliarsi\s+(del\s+)?top)\b",
             ],
             "add": [
                 r"\b(rimett[aoe]?\s+(la\s+)?(camicia|maglia|top)|indoss[aoe]?\s+(la\s+)?(camicia|maglia))\b",
                 r"\b(camicia\s+(chiusa|bottonata|indossata))\b",
+                # Pattern narrativi LLM
+                r"\b(si\s+rimett[aoe]?\s+(la\s+)?camicia|rimett[aoe]?\s+(la\s+)?camicia)\b",
+                r"\b(indoss[ao]\s+di\s+nuovo\s+(la\s+)?camicia)\b",
+                r"\b(riprende\s+(la\s+)?camicia|prende\s+(la\s+)?camicia)\b",
+                r"\b(mette\s+(la\s+)?camicia|si\s+veste\s+(la\s+)?camicia)\b",
+                r"\b(chiud[a]\s+(la\s+)?camicia|botton[a]\s+(la\s+)?camicia)\b",
+                r"\b(camicia\s+rimesa|camicia\s+indossata)\b",
             ],
             "values": {
                 "unbutton": "unbuttoned white shirt, cleavage visible",
@@ -178,26 +217,53 @@ class OutfitModifierSystem:
             }
         },
         
-        # BOTTOM
+        # BOTTOM - Espansi con molti più pattern
         "bottom": {
             "lift": [
                 r"\b(gonna\s+sollevata|gonna\s+corta|sotto\s+la\s+gonna|upskirt)\b",
                 r"\b(sollev[ao]\s+(la\s+)?gonna|alz[oa]\s+(la\s+)?gonna|gonna\s+rintracciata)\b",
                 r"\b(gonna\s+da\s+sotto|vista\s+da\s+sotto\s+la\s+gonna|alzo\s+(la\s+)?gonna)\b",
+                # Pattern narrativi LLM
+                r"\b(si\s+solleva\s+(la\s+)?gonna|solleva\s+(la\s+)?gonna)\b",
+                r"\b(gonna\s+(sollevarsi|alzarsi|accorciarsi))\b",
+                r"\b(alz[ao]\s+(la\s+)?gonna\s+da\s+sotto)\b",
             ],
             "lower": [
                 r"\b(pantaloni\s+abbassati|pantaloni\s+giù|jeans\s+abbassati)\b",
                 r"\b(abbass[ao]\s+(i\s+)?pantaloni|cal[oa]\s+(i\s+)?pantaloni)\b",
                 r"\b(zip\s+(aperta|giù)|cerniera\s+aperta|pantaloni\s+aperti)\b",
+                # Pattern narrativi LLM
+                r"\b(si\s+abbassa\s+(i\s+)?pantaloni|abbassa\s+(i\s+)?pantaloni)\b",
             ],
             "remove": [
                 r"\b(senza\s+(gonna|pantaloni|pantaloncini)|gonna\s+tolta)\b",
                 r"\b(tol[gt][ao]?\s+(la\s+)?(gonna|skirt)|lev[oa]\s+(la\s+)?(gonna|skirt))\b",
                 r"\b(nud[ao]\s+(dai\s+fianchi\s+in\s+giù|in\s+basso))\b",
+                # Pattern narrativi LLM - gonne
+                r"\b(si\s+togli[eè]\s+(la\s+)?gonna|toglie\s+(la\s+)?gonna)\b",
+                r"\b(si\s+sfil[a]\s+(la\s+)?gonna|sfil[a]\s+(la\s+)?gonna)\b",
+                r"\b(si\s+leva\s+(la\s+)?gonna|leva\s+(la\s+)?gonna)\b",
+                r"\b(gonna\s+(sfilata|tolta|levata|rimossa)|lasci[a]\s+(la\s+)?gonna)\b",
+                r"\b(senza\s+(la\s+)?gonna|rimane\s+senza\s+gonna)\b",
+                r"\b(si\s+libera\s+(della\s+)?gonna)\b",
+                r"\b(gonna\s+(scivol[a]\s+giù|cade|scende))\b",
+                # Pattern pantaloni
+                r"\b(si\s+togli[eè]\s+(i\s+)?pantaloni|toglie\s+(i\s+)?pantaloni)\b",
+                r"\b(si\s+sfil[a]\s+(i\s+)?pantaloni|sfil[a]\s+(i\s+)?pantaloni)\b",
+                r"\b(pantaloni\s+(tolti|sfilati|levati|rimossi))\b",
+                r"\b(senza\s+(i\s+)?pantaloni|rimane\s+senza\s+pantaloni)\b",
             ],
             "add": [
                 r"\b(rimett[aoe]?\s+(la\s+)?(gonna|skirt)|indoss[aoe]?\s+(la\s+)?(gonna|skirt))\b",
                 r"\b(gonna\s+(rimessa|indossata|calata))\b",
+                # Pattern narrativi LLM
+                r"\b(si\s+rimett[aoe]?\s+(la\s+)?gonna|rimett[aoe]?\s+(la\s+)?gonna)\b",
+                r"\b(si\s+rimett[aoe]?\s+(i\s+)?pantaloni|rimett[aoe]?\s+(i\s+)?pantaloni)\b",
+                r"\b(indoss[ao]\s+di\s+nuovo\s+(la\s+)?gonna)\b",
+                r"\b(riprende\s+(la\s+)?gonna|prende\s+(la\s+)?gonna)\b",
+                r"\b(mette\s+(la\s+)?gonna|si\s+veste\s+(la\s+)?gonna)\b",
+                r"\b(calz[a]\s+(la\s+)?gonna|si\s+cal[a]\s+(la\s+)?gonna)\b",
+                r"\b(pantaloni\s+(rimesse|rimessi|indossati))\b",
             ],
             "values": {
                 "lift": "pleated skirt lifted up, exposed",

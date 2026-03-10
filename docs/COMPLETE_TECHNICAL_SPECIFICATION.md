@@ -774,6 +774,137 @@ PhaseManager.on_turn_end() → PhaseChangeResult
 
 ---
 
+### 4.5 Remote Communication & Invitation System V4.5
+
+**Problema:** Il giocatore vuole interagire con NPC che non sono nella stessa location (messaggi, telefonate) e invitarli a casa.
+
+**Soluzione:** Due nuovi sistemi integrati nel TurnOrchestrator.
+
+#### 4.5.1 Remote Communication System
+
+**File:** `src/luna/systems/remote_communication.py`
+
+Permette di scrivere/chiamare NPC da qualsiasi location.
+
+**Pattern Riconosciuti:**
+- "scrivo a [NPC]", "mando messaggio a [NPC]"
+- "chiamo [NPC]", "telefono a [NPC]"
+- "mandami [qualcosa]", "chiedo a [NPC]"
+
+**Flusso:**
+```
+Player: "Scrivo a Luna che mi manchi"
+    ↓
+RemoteCommunicationHandler.detect_remote_communication()
+    ↓
+Target: Luna detected
+    ↓
+TurnOrchestrator: switch_companion("Luna")
+    ↓
+Build System Prompt: "=== COMUNICAZIONE REMOTA ===\nStai ricevendo un messaggio..."
+    ↓
+LLM risponde come Luna (dal suo ufficio)
+    ↓
+Image Generation: Luna nel suo ufficio (schedule location)
+    ↓
+AffinityCalculator: usa game_state.active_companion (= Luna)
+```
+
+**Vantaggi:**
+- NPC risponde dal loro contesto reale (location, attività)
+- Immagini corrette (NPC nella sua location, non dove sei tu)
+- Affinity e personality funzionano normalmente
+
+#### 4.5.2 Invitation System
+
+**File:** `src/luna/systems/invitation_manager.py`
+
+Permette di invitare NPC a casa propria per un orario specifico.
+
+**Flusso Completo:**
+```
+Morning (Mattina):
+Player: "Vieni a casa mia stasera?"
+    ↓
+InvitationManager.detect_invitation_intent() → (True, "Stella", "evening")
+    ↓
+NPC risponde: "Va bene!" (detect_acceptance)
+    ↓
+InvitationManager.register_invitation(Stella, turn=15, arrival="evening")
+    ↓
+[Invito salvato in _pending_invitations]
+
+... (gioco continua) ...
+
+Evening (Sera):
+PhaseManager cambia fase
+    ↓
+InvitationManager.check_arrivals(current_time="evening", player_location="player_home")
+    ↓
+[Stella found in pending, arrival="evening"]
+    ↓
+build_arrival_message(): 
+"Mentre ti rilassi in salotto, senti suonare il campanello..."
+    ↓
+Messaggio aggiunto alla risposta finale
+    ↓
+Stella diventa companion attivo a player_home
+```
+
+**Messaggio Narrativo Arrivo:**
+```
+*Mentre ti rilassi in salotto, senti suonare il campanello. 
+Aprendo la porta, trovi Stella che è venuta come promesso.*
+```
+
+#### 4.5.3 Messaggio Narrativo Cambio Fase
+
+**Problema:** Quando un companion se ne va al cambio fase, il giocatore deve sapere dove trovarlo.
+
+**Soluzione:** Messaggio narrativo immersivo:
+
+```
+⏰ La campanella suona. È pomeriggio.
+
+*Luna raccoglie le sue cose.* "Devo andare in ufficio a correggere i compiti."
+
+[La Luna è andata in: Ufficio Professoresse]
+```
+
+**Implementazione in TurnOrchestrator:**
+- `_handle_phase_manager()` rileva `phase_result.companion_left`
+- Costruisce messaggio con: nome NPC, attività, nuova location
+- Aggiunge a `phase_narrative_message`
+
+#### 4.5.4 Regole di Follow Migliorate
+
+**Quando ti sposti di location:**
+
+Un companion ti segue SOLO se TUTTE queste condizioni sono vere:
+1. **Affinity ≥ 65** (relazione forte)
+2. **Esplicitamente invitato** nei messaggi precedenti ("vieni con me", "seguimi")
+3. **Non è un NPC temporaneo** (generici senza affinity tracking)
+
+**Altrimenti:**
+- Companion rimane nella location precedente
+- Switch automatico a modalità SOLO
+- Se segue: messaggio narrativo all'arrivo
+
+**Implementazione:**
+```python
+# In _handle_movement_turn()
+current_affinity = game_state.affinity.get(old_companion, 0)
+was_invited = self._was_companion_invited(old_companion, game_state.turn_count)
+is_temporary_npc = getattr(companion_def, 'is_temporary', False)
+
+if current_affinity >= 65 and was_invited and not is_temporary_npc:
+    # Companion segue
+else:
+    # Companion rimane indietro
+```
+
+---
+
 ## PARTE V: AI INTEGRATION - IL CERVELLO
 
 ### 5.1 Architettura LLM - Multi-Provider con Fallback
@@ -995,6 +1126,58 @@ Salvataggio in storage/images/
 - FPS: 16
 - Frame: 162 (da 81 generati)
 - Motion speed: 6/10
+
+### 6.5 Director of Photography (DoP) - La Cinematografia
+
+**Concetto:** Il sistema DoP simula un Direttore della Fotografia esperto che decide l'orientamento ottimale per ogni scena, come accade nel cinema reale.
+
+**Problema:** Le immagini quadrate (1024x1024) non sono sempre ottimali:
+- Panorami e ambienti ampi richiedono formato orizzontale
+- Ritratti e figure intere richiedono formato verticale
+- Scene bilanciate funzionano bene in quadrato
+
+**Soluzione - Aspect Ratio Dinamico:**
+```
+LANDSCAPE (736x512)  ~1.44:1  → Panorami, gruppi, azione orizzontale
+PORTRAIT  (512x736)  ~0.69:1  → Ritratti, figure intere, verticalità
+SQUARE   (1024x1024) 1:1      → Medium shot, default versatile
+```
+
+**Vincolo Tecnico:** Tutte le dimensioni divisibili per 16 per compatibilità con WanVideo I2V.
+
+**Flusso Decisionale:**
+```
+1. LLM analizza la scena (descrizione, location, pose)
+2. LLM sceglie aspect_ratio (landscape/portrait/square)
+3. LLM fornisce dop_reasoning (ragionamento cinematografico)
+4. ImagePromptBuilder include aspect_ratio nel prompt
+5. ComfyClient mappa a dimensioni concrete (736x512/etc)
+6. VideoClient eredita proporzioni per coerenza
+```
+
+**Prompt LLM (Sezione DoP):**
+```
+Sei un Direttore della Fotografia (DoP) esperto con 20 anni di carriera...
+Scegli obbligatoriamente uno di questi aspect ratio:
+- "landscape" (736x512) - Cinemascope, scene d'azione, ambienti ampi
+- "portrait" (512x736) - Ritratto classico, figure intere, primi piani
+- "square" (1024x1024) - Medium shot bilanciati, default sicuro
+```
+
+**Implementazione:**
+- `AspectRatioDirector` - Analisi e scoring basato su keyword
+- `ImagePrompt.aspect_ratio` - Campo nel modello dati
+- `ComfyUIClient` - Patch dinamica del workflow
+- `VideoClient` - Calcolo dimensioni preservando aspect ratio
+
+**Esempi di Scelta:**
+| Scena | Aspect Ratio | Ragionamento |
+|-------|-------------|--------------|
+| Luna in piedi in corridoio | portrait | Figura intera, enfasi verticalità |
+| Aula piena di studenti | landscape | Ampio campo visivo, gruppo |
+| Luna seduta alla scrivania | square | Medium shot bilanciato |
+| Inseguimento nel parco | landscape | Azione orizzontale, movimento |
+| Primo piano emotivo | portrait | Intimità verticale, volto |
 
 ---
 

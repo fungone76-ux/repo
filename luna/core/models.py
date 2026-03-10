@@ -345,6 +345,10 @@ class LLMResponse(LunaBaseModel):
     tags_en: List[str] = Field(default_factory=list, description="SD tags for image generation")
     body_focus: Optional[str] = Field(default=None, description="Body part in focus")
     
+    # Director of Photography - Aspect Ratio
+    aspect_ratio: str = Field(default="square", description="landscape, portrait, or square")
+    dop_reasoning: str = Field(default="", description="Cinematographic reasoning for aspect ratio choice")
+    
     # Multi-character support
     secondary_characters: List[str] = Field(
         default_factory=list, 
@@ -767,8 +771,15 @@ class LocationInstance(LunaBaseModel):
         if self.current_state in location_def.dynamic_descriptions:
             return location_def.dynamic_descriptions[self.current_state]
         
-        if time_of_day in location_def.time_descriptions:
-            return location_def.time_descriptions[time_of_day]
+        # V4.4 FIX: Handle both enum and string time keys
+        # Convert time_of_day to string for comparison
+        time_key = time_of_day.value if hasattr(time_of_day, 'value') else str(time_of_day)
+        
+        # Check if any key in time_descriptions matches (as string)
+        for key, desc in location_def.time_descriptions.items():
+            key_str = key.value if hasattr(key, 'value') else str(key)
+            if key_str == time_key:
+                return desc
         
         return location_def.description
 
@@ -1073,9 +1084,13 @@ class ImagePrompt(LunaBaseModel):
     positive: str
     negative: str = ""
     width: int = Field(default=896, ge=512, le=2048)
-    height: int = Field(default=1152, ge=512, le=2048)
+    height: int = Field(default=896, ge=512, le=2048)
     steps: int = Field(default=24, ge=1, le=100)
     seed: Optional[int] = None
+    
+    # Director of Photography - Aspect Ratio decision
+    aspect_ratio: str = Field(default="square", description="landscape, portrait, or square")
+    dop_reasoning: str = Field(default="", description="Cinematographic reasoning for aspect ratio choice")
     
     # LoRA configuration
     lora_stack: List[Dict[str, Any]] = Field(default_factory=list)

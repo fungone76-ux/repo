@@ -37,8 +37,8 @@ npc_schedules:
       outfit: "casual"  # Più rilassata
     
     night:
-      location: "school_office_luna"  # Luna vive nell'ufficio (o dormitorio insegnanti)
-      activity: "Riposa nel suo alloggio, legge prima di dormire"
+      location: "luna_home"  # Luna è a casa sua di notte
+      activity: "Riposa a casa sua, legge prima di dormire"
       outfit: "nightwear"
 
   # ============================================================

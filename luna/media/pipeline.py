@@ -80,6 +80,8 @@ class MediaPipeline:
         location_id: Optional[str] = None,
         location_description: Optional[str] = None,
         location_visual_style: Optional[str] = None,
+        aspect_ratio: str = "square",
+        dop_reasoning: str = "",
     ) -> MediaResult:
         """Generate all media types asynchronously.
         
@@ -125,7 +127,7 @@ class MediaPipeline:
         image_task = asyncio.create_task(
             self._generate_image_async(
                 visual_en_with_location, tags, companion_name, outfit, base_prompt, 
-                secondary_characters, location_visual_style
+                secondary_characters, location_visual_style, aspect_ratio, dop_reasoning
             )
         )
         tasks.append(("image", image_task))
@@ -266,7 +268,20 @@ class MediaPipeline:
         if not location_id:
             return visual_en
         
-        # Skip if visual_en already contains clear location indicators
+        # V4.4 FIX: Always inject correct location for player_home (prevent office/school confusion)
+        # When at player_home, force bedroom/apartment context regardless of LLM output
+        if location_id == 'player_home':
+            # Force bedroom context, remove conflicting indicators
+            import re
+            # Remove conflicting location words
+            visual_en = re.sub(r'\b(office|school|classroom|gym|library|corridor)\b', '', visual_en, flags=re.IGNORECASE)
+            # Inject bedroom
+            if location_description:
+                visual_en = f"{location_description}, {visual_en}"
+                print(f"[MediaPipeline] FORCED bedroom location for player_home")
+            return visual_en
+        
+        # Skip if visual_en already contains clear location indicators (for other locations)
         visual_lower = visual_en.lower()
         location_indicators = [
             'classroom', 'bathroom', 'bedroom', 'kitchen', 'office',
@@ -360,6 +375,11 @@ class MediaPipeline:
         
         for indicator in generic_indicators:
             if indicator in visual_lower:
+                # V4.4 FIX: NPCs created from templates (name starts with 'npc_') should NEVER be treated as generic
+                # They have specific base_prompts with visual traits defined in npc_templates.yaml
+                if companion_name.lower().startswith("npc_"):
+                    print(f"[MediaPipeline] NPC template detected ({companion_name}), not treating as generic despite indicator: {indicator}")
+                    return False
                 # Check if this is NOT the companion's name
                 if companion_name.lower() not in visual_lower:
                     print(f"[MediaPipeline] Detected generic NPC: {indicator}")
@@ -376,6 +396,8 @@ class MediaPipeline:
         base_prompt: Optional[str] = None,
         secondary_characters: Optional[List[Dict[str, str]]] = None,
         location_visual_style: Optional[str] = None,
+        aspect_ratio: str = "square",
+        dop_reasoning: str = "",
     ) -> Optional[str]:
         """Generate image asynchronously.
         
@@ -387,6 +409,8 @@ class MediaPipeline:
             base_prompt: Character base prompt from world YAML (SACRED)
             secondary_characters: Optional list of secondary characters for multi-character scenes
             location_visual_style: V4: Visual style of location (used when solo)
+            aspect_ratio: Director of Photography choice (landscape, portrait, square)
+            dop_reasoning: Cinematographic reasoning for the aspect ratio choice
             
         Returns:
             Path to generated image or None
@@ -432,6 +456,8 @@ class MediaPipeline:
                 base_prompt=effective_base_prompt,  # Use possibly modified base prompt
                 secondary_characters=secondary_characters,  # Multi-character support
                 location_visual_style=location_visual_style,  # V4: Pass for solo mode
+                aspect_ratio=aspect_ratio,  # DoP aspect ratio decision
+                dop_reasoning=dop_reasoning,  # DoP reasoning
             )
             
             # Generate image

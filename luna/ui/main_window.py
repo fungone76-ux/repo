@@ -459,6 +459,10 @@ class MainWindow(QMainWindow):
             if self.engine.event_manager:
                 self.engine.event_manager.on_event_changed = self._on_event_changed
             
+            # V4.4 FIX: Connect time change callback to update UI
+            if self.engine:
+                self.engine.set_ui_time_change_callback(self._on_time_change)
+            
             # Update UI
             self._update_companion_list()
             self._update_companion_locator()
@@ -469,6 +473,7 @@ class MainWindow(QMainWindow):
             self._update_quest_tracker()
             self._update_story_beats()
             self._update_action_bars()
+            self._update_event_widget()
             
             # Welcome notification
             self.feedback.info(
@@ -484,6 +489,9 @@ class MainWindow(QMainWindow):
             self._display_result(intro_result)
             
             self.lbl_status.setText("Ready")
+            
+            # Clear event widget (no active events at start)
+            self._update_event_widget()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to initialize: {e}")
@@ -496,6 +504,12 @@ class MainWindow(QMainWindow):
         world = self.engine.world
         companions = list(world.companions.keys())
         self.companion_status.set_companions(companions)
+        
+        # Update affinity values from game state (important after load)
+        game_state = self.engine.get_game_state()
+        if game_state and game_state.affinity:
+            for name, affinity_value in game_state.affinity.items():
+                self.companion_status.update_companion(name, affinity_value, "", "😐")
     
     def _update_companion_locator(self) -> None:
         """Update companion location hints."""
@@ -602,6 +616,7 @@ class MainWindow(QMainWindow):
         self._update_companion_locator()
         self._update_video_toggle()
         self._update_personality_display()
+        self._update_event_widget()
 
     def _update_location_widget(self, force_location_id: Optional[str] = None) -> None:
         """Update location widget display.
@@ -1078,9 +1093,11 @@ class MainWindow(QMainWindow):
         
         # Companion updates
         state = self.engine.get_game_state()
+        print(f"[MainWindow] Updating affinity for {len(result.affinity_changes)} companions")
         for name, delta in result.affinity_changes.items():
             # Get current total affinity value, not the delta
             current_affinity = state.affinity.get(name, 0)
+            print(f"[MainWindow] {name}: delta={delta}, current_affinity={current_affinity}")
             self.companion_status.update_companion(
                 name, current_affinity, "", "😐"
             )
@@ -1136,6 +1153,44 @@ class MainWindow(QMainWindow):
         """Timer update for async operations."""
         pass
     
+    def _on_time_change(self, new_time, message: str) -> None:
+        """Handle time change - update UI time display.
+        
+        V4.4 FIX: Called when time advances via rest commands or auto-advance.
+        Updates the time label in the status bar AND location widget.
+        
+        Args:
+            new_time: New TimeOfDay value
+            message: Time change message (for logging)
+        """
+        from luna.core.models import TimeOfDay
+        
+        # Handle both enum and string
+        if hasattr(new_time, 'value'):
+            time_str = new_time.value
+            time_enum = new_time
+        else:
+            time_str = str(new_time)
+            try:
+                time_enum = TimeOfDay(time_str)
+            except ValueError:
+                time_enum = TimeOfDay.MORNING
+        
+        # Update time label (same logic as _update_status)
+        time_icons = {
+            TimeOfDay.MORNING: "☀️",
+            TimeOfDay.AFTERNOON: "🌅",
+            TimeOfDay.EVENING: "🌆",
+            TimeOfDay.NIGHT: "🌙",
+        }
+        icon = time_icons.get(time_enum, "🕐")
+        self.lbl_time.setText(f"{icon} {time_str.upper()}")
+        
+        # V4.4 FIX: Also update location widget to reflect new time description
+        self._update_location_widget()
+        
+        print(f"[MainWindow] UI time updated to: {time_str}")
+    
     def _on_event_changed(self, event) -> None:
         """Handle global event activation/deactivation.
         
@@ -1159,6 +1214,22 @@ class MainWindow(QMainWindow):
         else:
             print("[GlobalEvent] Clearing event widget")
             self.event_widget.set_event()  # Clear event
+
+    def _update_event_widget(self) -> None:
+        """Update event widget with current active global event."""
+        if not self.engine or not self.engine.event_manager:
+            self.event_widget.set_event()  # Clear
+            return
+        
+        primary_event = self.engine.event_manager.get_primary_event()
+        if primary_event:
+            self.event_widget.set_event(
+                title=primary_event.name,
+                description=primary_event.description,
+                icon=primary_event.icon,
+            )
+        else:
+            self.event_widget.set_event()  # Clear
 
     def _on_toggle_audio(self, checked: bool) -> None:
         """Toggle audio."""
@@ -1311,6 +1382,19 @@ class MainWindow(QMainWindow):
             return
         
         try:
+            # V4.3 FIX: Clear old session memory before starting new game
+            if self.engine and hasattr(self.engine, '_session_id') and self.engine._session_id:
+                old_session_id = self.engine._session_id
+                print(f"[MainWindow] Cleaning up old session {old_session_id} before new game...")
+                try:
+                    # Delete semantic memory for old session
+                    if self.engine.memory_manager and hasattr(self.engine.memory_manager, '_semantic_store'):
+                        if self.engine.memory_manager._semantic_store:
+                            self.engine.memory_manager._semantic_store.delete_session()
+                            print(f"[MainWindow] Deleted semantic memory for session {old_session_id}")
+                except Exception as e:
+                    print(f"[MainWindow] Warning: Could not delete semantic memory: {e}")
+            
             # Reset engine completely
             if self.engine:
                 self.engine = None
@@ -1670,6 +1754,42 @@ class MainWindow(QMainWindow):
                 # Replace the state manager's current state with loaded one
                 self.engine.state_manager._current = state
                 
+                # Load personality states from DB
+                session_model = await db_manager.get_session(db, session_id)
+                if session_model and session_model.personality_state:
+                    try:
+                        from luna.systems.personality import PersonalityState
+                        personality_data = session_model.personality_state
+                        states_list = personality_data.get("states", [])
+                        personality_states = [
+                            PersonalityState(**state_data) 
+                            for state_data in states_list
+                        ]
+                        self.engine.personality_engine.load_states(personality_states)
+                        print(f"[Load] Loaded {len(personality_states)} personality states")
+                    except Exception as e:
+                        print(f"[Load] Error loading personality states: {e}")
+                
+                # Load quest states from DB
+                from luna.core.models import QuestInstance, QuestStatus
+                quest_state_models = await db_manager.get_all_quest_states(db, session_id)
+                quest_instances = []
+                for qm in quest_state_models:
+                    try:
+                        instance = QuestInstance(
+                            quest_id=qm.quest_id,
+                            status=QuestStatus(qm.status) if isinstance(qm.status, str) else qm.status,
+                            current_stage_id=qm.current_stage_id,
+                            stage_data=qm.stage_data or {},
+                            started_at=qm.started_at,
+                            completed_at=qm.completed_at,
+                        )
+                        quest_instances.append(instance)
+                    except Exception as e:
+                        print(f"[Load] Error loading quest state {qm.quest_id}: {e}")
+                self.engine.quest_engine.load_states(quest_instances)
+                print(f"[Load] Loaded {len(quest_instances)} quest states")
+                
                 # Re-initialize systems with loaded state
                 game_state = self.engine.get_game_state()
                 
@@ -1692,9 +1812,40 @@ class MainWindow(QMainWindow):
                 game_state.completed_quests = state.completed_quests
                 
                 # V4.1: Restore active companion (critical fix)
-                game_state.active_companion = state.active_companion
-                self.engine.companion = state.active_companion
-                print(f"[Load] Restored companion: {state.active_companion}")
+                # V4.4 FIX: Validate that companion exists in world (not temporary NPC from old save)
+                saved_companion = state.active_companion
+                world_companions = list(self.engine.world.companions.keys()) if self.engine.world else []
+                
+                if saved_companion and saved_companion not in world_companions and saved_companion != "_solo_":
+                    print(f"[Load] WARNING: Saved companion '{saved_companion}' not found in world (temporary NPC?), resetting to _solo_")
+                    # Also remove from affinity to clean up
+                    if saved_companion in game_state.affinity:
+                        del game_state.affinity[saved_companion]
+                        print(f"[Load] Removed temporary NPC '{saved_companion}' from affinity")
+                    game_state.active_companion = "_solo_"
+                    self.engine.companion = "_solo_"
+                else:
+                    game_state.active_companion = saved_companion
+                    self.engine.companion = saved_companion
+                
+                print(f"[Load] Restored companion: {game_state.active_companion}")
+                
+                # V4.4 FIX: Clean up temporary NPCs from affinity on load
+                # Temporary NPCs like 'Messaggio', 'Molto', etc. should not persist
+                world_companion_names = set(self.engine.world.companions.keys()) if self.engine.world else set()
+                world_companion_names.add("_solo_")  # _solo_ is always valid
+                
+                affinity_to_remove = []
+                for name in list(game_state.affinity.keys()):
+                    if name not in world_companion_names:
+                        affinity_to_remove.append(name)
+                
+                for name in affinity_to_remove:
+                    del game_state.affinity[name]
+                    print(f"[Load] Cleaned up temporary NPC from affinity: {name}")
+                
+                if affinity_to_remove:
+                    print(f"[Load] Total temporary NPCs cleaned: {len(affinity_to_remove)}")
                 
                 # V3.3: Explicitly restore location (critical fix)
                 game_state.current_location = state.current_location
@@ -1711,6 +1862,17 @@ class MainWindow(QMainWindow):
                 # Connect callbacks
                 if self.engine.event_manager:
                     self.engine.event_manager.on_event_changed = self._on_event_changed
+                    # Sync event widget with active events after load
+                    primary_event = self.engine.event_manager.get_primary_event()
+                    if primary_event:
+                        print(f"[Load] Restoring active event: {primary_event.name}")
+                        self._on_event_changed(primary_event)
+                    else:
+                        self.event_widget.set_event()  # Clear widget
+                
+                # V4.4 FIX: Connect time change callback to update UI
+                if self.engine:
+                    self.engine.set_ui_time_change_callback(self._on_time_change)
                 
                 # Update ALL UI widgets
                 self._update_all_widgets()

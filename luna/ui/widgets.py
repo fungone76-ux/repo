@@ -312,10 +312,13 @@ class CompanionStatusWidget(QGroupBox):
         emotion_icon: str = "😐",
     ) -> None:
         """Update companion display."""
+        print(f"[CompanionStatus] Updating {name}: affinity={affinity}, emotion={emotion}")
         if name not in self.companion_widgets:
+            print(f"[CompanionStatus] WARNING: {name} not in companion_widgets! Available: {list(self.companion_widgets.keys())}")
             return
 
         widgets = self.companion_widgets[name]
+        print(f"[CompanionStatus] Setting bar value to {affinity} for {name}")
         widgets['affinity'].setValue(affinity)
 
         if emotion:
@@ -540,6 +543,18 @@ class StoryLogWidget(QGroupBox):
         current = self.lbl_story.text()
         icon = "🎭" if character_name == "Narrator" else "👤"
         formatted = f'<div style="color: #E91E63; font-weight: bold; margin: 10px 0;">{icon} {character_name}: <span style="color: #fff; font-weight: normal;">{text}</span></div>'
+        self.lbl_story.setText(f"{current}\n{formatted}")
+        self.scroll_to_bottom()
+    
+    def _append_formatted(self, text: str, color: str = "#fff") -> None:
+        """Append formatted text with custom color (internal use).
+        
+        Args:
+            text: Text to append
+            color: HTML color code
+        """
+        current = self.lbl_story.text()
+        formatted = f'<div style="color: {color}; margin: 5px 0;">{text}</div>'
         self.lbl_story.setText(f"{current}\n{formatted}")
         self.scroll_to_bottom()
 

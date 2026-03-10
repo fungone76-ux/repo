@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from luna.core.models import WorldDefinition
+    from luna.core.models import WorldDefinition, TimeOfDay
     from luna.systems.personality import PersonalityEngine
 
 from luna.systems.multi_npc.interaction_rules import (
@@ -117,26 +117,90 @@ class MultiNPCManager:
     ) -> List[str]:
         """Get list of NPCs present in the current scene.
         
-        For now, returns all companions in world except active.
-        Future: Filter by location/schedule.
+        V4.5: Now filters by location using schedule manager.
+        Only NPCs at the same location as player are considered present.
         
         Args:
             active_npc: Currently active NPC
             game_state: Current game state
             
         Returns:
-            List of NPC names present
+            List of NPC names present at current location
         """
-        if not self.world:
+        if not self.world or not game_state:
             return []
         
         # Get all companions except active
         all_npcs = list(self.world.companions.keys())
-        present = [n for n in all_npcs if n != active_npc]
+        potential_npcs = [n for n in all_npcs if n != active_npc]
         
-        # TODO: Filter by location if game_state has location data
-        # TODO: Check NPC schedule (only present if following player or at same location)
+        # V4.5: Filter by location using schedule manager
+        present = []
+        player_location = game_state.current_location
         
+        for npc_name in potential_npcs:
+            # Get NPC definition
+            npc_def = self.world.companions.get(npc_name)
+            if not npc_def:
+                continue
+            
+            # Check schedule - first try companion's own schedule, then npc_schedules
+            npc_location = None
+            
+            # Try companion.schedule (for modular YAML files like luna.yaml)
+            if hasattr(npc_def, 'schedule') and npc_def.schedule:
+                time_of_day = game_state.time_of_day
+                if isinstance(time_of_day, str):
+                    from luna.core.models import TimeOfDay
+                    try:
+                        time_of_day = TimeOfDay(time_of_day)
+                    except ValueError:
+                        time_of_day = TimeOfDay.MORNING
+                
+                # Handle both dict (YAML) and object (parsed) schedules
+                schedule = npc_def.schedule
+                if isinstance(schedule, dict):
+                    schedule_entry = schedule.get(time_of_day)
+                    if schedule_entry:
+                        # Handle both dict and object schedule entries
+                        if isinstance(schedule_entry, dict):
+                            npc_location = schedule_entry.get('location', '')
+                        else:
+                            npc_location = getattr(schedule_entry, 'location', '')
+            
+            # Try world.npc_schedules (for separate schedule files)
+            elif hasattr(self.world, 'npc_schedules') and npc_name in self.world.npc_schedules:
+                npc_schedule = self.world.npc_schedules[npc_name]
+                time_of_day = game_state.time_of_day
+                if isinstance(time_of_day, str):
+                    from luna.core.models import TimeOfDay
+                    try:
+                        time_of_day = TimeOfDay(time_of_day)
+                    except ValueError:
+                        time_of_day = TimeOfDay.MORNING
+                
+                # Handle both dict and object schedules
+                if isinstance(npc_schedule, dict):
+                    schedules = npc_schedule.get('schedules', {})
+                    schedule_entry = schedules.get(time_of_day)
+                    if schedule_entry:
+                        npc_location = schedule_entry.get('location', '') if isinstance(schedule_entry, dict) else getattr(schedule_entry, 'location', '')
+                else:
+                    schedule_entry = npc_schedule.schedules.get(time_of_day)
+                    if schedule_entry:
+                        npc_location = schedule_entry.location
+            
+            # Check spawn_locations as fallback
+            if not npc_location and hasattr(npc_def, 'spawn_locations'):
+                if player_location in npc_def.spawn_locations:
+                    npc_location = player_location
+            
+            # NPC is present if at same location as player
+            if npc_location == player_location:
+                present.append(npc_name)
+                print(f"[MultiNPC] {npc_name} is present at {player_location}")
+        
+        print(f"[MultiNPC] Present NPCs at {player_location}: {present}")
         return present
     
     def check_intervention(
