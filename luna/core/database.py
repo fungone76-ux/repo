@@ -35,6 +35,9 @@ class GameSessionModel(Base):
     current_location = Column(String, default="Unknown")
     companion_outfit = Column(String, default="default")
     
+    # V4.6: Companion location (where they were when game was saved)
+    companion_location = Column(String, nullable=True)
+    
     # Player state (serialized)
     player_state = Column(JSON, default=dict)
     

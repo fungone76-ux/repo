@@ -1399,7 +1399,29 @@ quests:
 └───────────────────────────┘
 ```
 
-**4. QuestChoiceWidget (Overlay)**
+**4. OutfitWidget (V4.6)**
+```
+┌─ 👗 Outfit ─────────────────────────┐
+│ Style: casual                       │
+│ White t-shirt and jeans             │
+│ Top: t-shirt | Bottom: jeans        │
+│                                     │
+│ 📝 SD Prompt:                       │
+│ <lora:Luna_XL:0.8>, 1girl, Luna,    │
+│ ..., (casual outfit:1.1), jeans     │
+│                                     │
+│ [👔 Cambia] [✏️ Modifica]          │
+└─────────────────────────────────────┘
+```
+
+**Funzionalità:**
+- Mostra outfit attuale (style, descrizione, componenti)
+- **V4.6:** Preview del positive prompt SD (character LoRA + outfit + selected LoRA)
+- Pulsante "Cambia": switcha tra stili del wardrobe
+- Pulsante "Modifica": modifica componenti individuali
+- Si aggiorna automaticamente dopo ogni turno
+
+**5. QuestChoiceWidget (Overlay)**
 ```
 ┌─────────────────────────────────────┐
 │  🎯 Un'Offerta Speciale             │
@@ -1775,6 +1797,177 @@ Per ricostruire Luna RPG v4 da zero:
 - **LoRA:** Low-Rank Adaptation, tecnica per addestrare personaggi in SD
 - **ComfyUI:** Interfaccia node-based per Stable Diffusion
 - **RunPod:** Cloud GPU per esecuzione ComfyUI
+
+---
+
+---
+
+## APPENDICE V4.6 - Memory Isolation, Debug Panel & LoRA System
+
+### V4.6.1 Memory Isolation per Companion
+
+**Problema:** La ricerca semantica in ChromaDB restituiva messaggi di tutti i companion. Quando il player parlava con Stella, lei vedeva i messaggi precedenti inviati a Luna.
+
+**Soluzione Tecnica:**
+
+1. **Metadata Tagging:** Ogni messaggio salvato in ChromaDB include il campo `companion` nei metadati:
+```python
+# In memory.py - add_message()
+self._semantic_store.add_memory(
+    memory_id=f"msg_{self.session_id}_{turn_number}_{role}",
+    content=f"[{role.upper()}]: {content}",
+    metadata={"turn": turn_number, "role": role, "companion": companion_name},
+    companion_name=companion_name  # V4.6
+)
+```
+
+2. **Query Filtering:** La ricerca semantica filtra per companion:
+```python
+# In memory.py - search()
+where_filter = None
+if companion_name and companion_name != "_solo_":
+    where_filter = {"companion": companion_name}
+
+results = self._collection.query(
+    query_embeddings=[query_embedding],
+    n_results=fetch_k,
+    where=where_filter,  # Filtra per companion
+    include=["documents", "distances", "metadatas"]
+)
+```
+
+3. **Post-Filtering:** Per retrocompatibilità, filtra anche i risultati in memoria:
+```python
+# Include se: companion matches, è _solo_, o non ha metadato
+if companion_name and companion_name != "_solo_":
+    mem_companion = metadata.get("companion") or metadata.get("npc")
+    if mem_companion and mem_companion not in (companion_name, "_solo_"):
+        continue  # Skip memories from other companions
+```
+
+### V4.6.2 Debug Panel - Architettura
+
+**File:** `src/luna/ui/debug_panel.py`
+
+**Struttura:**
+```
+DebugPanelWindow (QDialog)
+├── QTabWidget (tabs per ogni NPC)
+│   └── NPCDebugPanel (per ogni companion)
+│       ├── AffinityControl (ValueControlWidget)
+│       └── PersonalityControls (5 ValueControlWidget)
+└── Button Bar (Refresh, Reset, Close)
+```
+
+**ValueControlWidget:**
+- ProgressBar per visualizzazione
+- SpinBox per input preciso (-100 a +100)
+- Slider per aggiustamento rapido
+- Botoni +/- per incrementi di 5
+
+**Comunicazione con Engine:**
+```python
+# Aggiornamento affinity
+def _on_affinity_changed(self, npc_name: str, value: int):
+    current = self._engine.state_manager.get_affinity(npc_name)
+    delta = value - current
+    self._engine.state_manager.change_affinity(npc_name, delta)
+
+# Aggiornamento personality
+def _on_trait_changed(self, npc_name: str, trait: str, value: int):
+    state = self._engine.personality_engine._ensure_state(npc_name)
+    trait_mapping = {
+        "romantic": "attraction",
+        "playful": "curiosity",
+        "trust": "trust",
+        "dominance": "dominance_balance",
+        "openness": "curiosity",
+    }
+    impression_field = trait_mapping.get(trait)
+    if impression_field:
+        setattr(state.impression, impression_field, value)
+```
+
+### V4.6.3 LoRA Mapping System
+
+**Architettura:**
+```
+LoraMapping
+├── config (opzionale)
+├── enabled (bool) - Toggle stato
+├── select_loras(tags, character, outfit_state)
+│   ├── pick_loras(tags) → LoRA base
+│   └── _select_clothing_loras(outfit) → LoRA clothing
+└── lora_prompt_suffix(entries) → stringa SD
+```
+
+**Selezione Clothing LoRA:**
+Il sistema confronta keywords dell'outfit con quelle registrate:
+```python
+def _select_clothing_loras(self, tags, outfit_state):
+    text = " ".join(tags).lower()
+    outfit_desc = outfit_state.get("description", "").lower()
+    
+    selected = []
+    
+    # Bikini
+    if any(k in text or k in outfit_desc for k in 
+           ["bikini", "swimsuit", "costume", "bagno"]):
+        selected.append(CLOTHING_LORAS["bikini"])
+    
+    # Lingerie
+    if any(k in text or k in outfit_desc for k in 
+           ["lingerie", "lace", "intimo", "mutande", ...]):
+        selected.append(CLOTHING_LORAS["lingerie"])
+    
+    # ... altri LoRA
+    
+    return selected
+```
+
+**Integrazione PromptBuilder:**
+```python
+# In ImagePromptBuilder.build()
+if lora_mapping and lora_mapping.is_enabled():
+    extra_loras = lora_mapping.select_loras(tags, character_name, outfit_state)
+    if extra_loras:
+        lora_tokens = [f"<lora:{name}:{weight:.2f}>" for name, weight in extra_loras]
+        positive = f"{' '.join(lora_tokens)}, {positive}"
+```
+
+**Toggle UI:**
+```python
+# In main_window.py
+self._lora_toggle_action = QAction("🎭 LoRA ON", self)
+self._lora_toggle_action.setCheckable(True)
+self._lora_toggle_action.setChecked(True)
+self._lora_toggle_action.triggered.connect(self._on_toggle_lora)
+
+def _on_toggle_lora(self, checked: bool):
+    self.lora_mapping.set_enabled(checked)
+    status = "ON" if checked else "OFF"
+    self._lora_toggle_action.setText(f"🎭 LoRA {status}")
+```
+
+### V4.6.4 Lista Completa LoRA V4.6
+
+| Nome | Categoria | Peso | Keywords IT |
+|------|-----------|------|-------------|
+| Bikini_XL_v2 | Clothing | 0.55 | bikini, costume, bagno, mare |
+| Lingerie_Lace_XL | Clothing | 0.60 | lingerie, intimo, pizzo, perizoma |
+| Yoga_Pants_XL | Clothing | 0.55 | yoga pants, leggings, palestra |
+| Slutty_Dress_XL | Clothing | 0.60 | vestito sexy, provocante, slutty |
+| Sexy_Clothing_XL | Clothing | 0.55 | abbigliamento sexy, hot |
+| Dongtan_Dress_XL | Clothing | 0.55 | abito da sera, elegante |
+| Oily_Black_Silk_OnePiece_XL | Clothing | 0.55 | wet, bagnato, oleoso |
+| Towel_XL | Clothing | 0.60 | asciugamano, dopo doccia |
+| Pantyhose_XL | Clothing | 0.50 | collant, calze, autoreggenti |
+| Sportswear_XL | Clothing | 0.55 | sport, fitness, tuta |
+| Masturbation_Pose_XL | NSFW | 0.60 | masturbazione, si tocca |
+| Self_Anal_Fisting_XL | NSFW | 0.65 | fisting anale, estremo |
+| Dildo_Masturbation_XL | NSFW | 0.60 | vibratore, giocattolo |
+| Table_Humping_XL | NSFW | 0.60 | sfregare tavolo |
+| Pillow_Humping_XL | NSFW | 0.60 | cuscino, sfregare |
 
 ---
 

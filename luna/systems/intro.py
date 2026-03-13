@@ -62,7 +62,7 @@ class IntroGenerator:
                 json_mode=True,
             )
             
-            # Save to memory
+            # Save to memory with companion isolation (V4.6)
             if self.memory_manager:
                 await self.memory_manager.add_message(
                     role="assistant",
@@ -70,6 +70,7 @@ class IntroGenerator:
                     turn_number=0,
                     visual_en=llm_response.visual_en,
                     tags_en=llm_response.tags_en,
+                    companion_name=game_state.active_companion,
                 )
             
         except Exception as e:

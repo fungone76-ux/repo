@@ -42,6 +42,8 @@ from luna.ui.action_bar import ActionBarWidget, QuickActionBar
 from luna.ui.feedback_visualizer import FeedbackVisualizer
 from luna.ui.quest_choice_widget import QuestChoiceWidget, QuestChoice, PendingChoiceManager
 from luna.ui.save_dialog import SaveDialog
+from luna.ui.debug_panel import DebugPanelWindow
+from luna.media.lora_mapping import LoraMapping
 
 
 class MainWindow(QMainWindow):
@@ -67,6 +69,13 @@ class MainWindow(QMainWindow):
         
         # Track current quest being decided
         self._current_choice_quest_id: Optional[str] = None
+        
+        # Debug panel (V4.6)
+        self._debug_window: Optional[DebugPanelWindow] = None
+        
+        # LoRA Mapping toggle (V4.6)
+        self.lora_mapping = LoraMapping()
+        self._lora_toggle_action: Optional[QAction] = None
 
         # UI setup
         self._setup_ui()
@@ -324,6 +333,20 @@ class MainWindow(QMainWindow):
         act_settings = QAction("⚙️ Settings", self)
         act_settings.triggered.connect(self._on_settings)
         toolbar.addAction(act_settings)
+        
+        toolbar.addSeparator()
+        
+        # Debug Panel (V4.6)
+        act_debug = QAction("🔧 Debug", self)
+        act_debug.triggered.connect(self._on_open_debug)
+        toolbar.addAction(act_debug)
+        
+        # LoRA Toggle (V4.6)
+        self._lora_toggle_action = QAction("🎭 LoRA ON", self)
+        self._lora_toggle_action.setCheckable(True)
+        self._lora_toggle_action.setChecked(True)
+        self._lora_toggle_action.triggered.connect(self._on_toggle_lora)
+        toolbar.addAction(self._lora_toggle_action)
 
     def _setup_statusbar(self) -> None:
         """Setup status bar."""
@@ -503,12 +526,15 @@ class MainWindow(QMainWindow):
 
         world = self.engine.world
         companions = list(world.companions.keys())
+        print(f"[DEBUG MainWindow] Updating companion list: {companions}")
         self.companion_status.set_companions(companions)
         
         # Update affinity values from game state (important after load)
         game_state = self.engine.get_game_state()
+        print(f"[DEBUG MainWindow] Game state affinity: {game_state.affinity if game_state else 'None'}")
         if game_state and game_state.affinity:
             for name, affinity_value in game_state.affinity.items():
+                print(f"[DEBUG MainWindow] Setting {name} affinity to {affinity_value}")
                 self.companion_status.update_companion(name, affinity_value, "", "😐")
     
     def _update_companion_locator(self) -> None:
@@ -652,9 +678,22 @@ class MainWindow(QMainWindow):
         game_state = self.engine.get_game_state()
         characters_present = []
         
-        # Check which companions are available at this location (from world definition)
-        if current.available_characters:
-            characters_present.extend(current.available_characters)
+        # V4.6 FIX: Check schedule manager to get ACTUAL NPC locations
+        current_location_id = game_state.current_location
+        if self.engine.schedule_manager:
+            for companion_name in self.engine.world.companions.keys():
+                # Skip temporary NPCs
+                companion_def = self.engine.world.companions.get(companion_name)
+                if getattr(companion_def, 'is_temporary', False):
+                    continue
+                
+                npc_location = self.engine.schedule_manager.get_npc_current_location(companion_name)
+                if npc_location == current_location_id:
+                    characters_present.append(companion_name)
+        else:
+            # Fallback to static definition if no schedule manager
+            if current.available_characters:
+                characters_present.extend(current.available_characters)
         
         # Get description
         desc = instance.get_effective_description(current, game_state.time_of_day)
@@ -669,13 +708,76 @@ class MainWindow(QMainWindow):
         )
         print(f"[LocationWidget] Updated: {current.name}, desc={desc[:50]}..., characters={len(characters_present)}")
 
-    def _update_outfit_widget(self) -> None:
-        """Update outfit widget display."""
+    def _build_prompt_preview(self, companion, outfit) -> str:
+        """Build SD positive prompt preview for display.
+        
+        Returns prompt with visual + outfit + LoRA (without base character LoRA).
+        """
+        from luna.media.builders import BASE_PROMPTS
+        from luna.media.lora_mapping import LoraMapping
+        
+        if not companion:
+            return ""
+        
+        # Get character base (includes character LoRA)
+        char_lower = companion.name.lower()
+        character_base = BASE_PROMPTS.get(char_lower, f"1girl, {companion.name}")
+        
+        # Build outfit part from components
+        outfit_parts = []
+        if outfit.components:
+            for key, value in outfit.components.items():
+                if value and value.lower() not in ["none", "n/a", ""]:
+                    outfit_parts.append(f"({value}:1.1)")
+        
+        # Add style as tag
+        if outfit.style and outfit.style != "default":
+            outfit_parts.append(f"({outfit.style} outfit:1.1)")
+        
+        # Add description keywords
+        if outfit.description:
+            # Extract key terms from description
+            desc_clean = outfit.description.replace(",", " ").lower()
+            outfit_parts.append(desc_clean)
+        
+        # Combine: character + outfit
+        parts = [character_base]
+        if outfit_parts:
+            parts.append(", ".join(outfit_parts))
+        
+        prompt = ", ".join(parts)
+        
+        # Add LoRA suffix if enabled
+        if hasattr(self, '_lora_mapping') and self._lora_mapping.is_enabled():
+            outfit_state = {
+                "description": outfit.description or "",
+                "style": outfit.style or "",
+                "components": outfit.components or {}
+            }
+            tags = [outfit.style] if outfit.style else []
+            selected_loras = self._lora_mapping.select_loras(tags, companion.name, outfit_state)
+            if selected_loras:
+                lora_suffix = self._lora_mapping.lora_prompt_suffix(selected_loras, include_triggers=True)
+                prompt = lora_suffix + ", " + prompt
+        
+        return prompt
+
+    def _update_outfit_widget(self, sd_prompt: Optional[str] = None) -> None:
+        """Update outfit widget display.
+        
+        Args:
+            sd_prompt: Optional real SD prompt from image generation (V4.6)
+        """
         if not self.engine:
             return
         
         state = self.engine.get_game_state()
         outfit = state.get_outfit()
+        
+        print(f"[DEBUG Outfit] active_companion: {state.active_companion}")
+        print(f"[DEBUG Outfit] outfit.style: {outfit.style}")
+        print(f"[DEBUG Outfit] outfit.description: {outfit.description}")
+        print(f"[DEBUG Outfit] outfit.components: {outfit.components}")
         
         # Get available styles from world
         world = self.engine.world
@@ -700,10 +802,14 @@ class MainWindow(QMainWindow):
             styles = list(companion.wardrobe.keys()) if companion.wardrobe else ["default"]
             self.outfit_widget.set_available_styles(styles)
         
+        # V4.6: Use REAL SD prompt from image generation if available
+        prompt_to_show = sd_prompt if sd_prompt else ""
+        
         self.outfit_widget.set_outfit(
             style=outfit.style,
             description=description,
             components=outfit.components,
+            positive_prompt=prompt_to_show,
         )
 
     def _update_quest_tracker(self) -> None:
@@ -933,7 +1039,7 @@ class MainWindow(QMainWindow):
             if self.engine and self.engine.phase_manager:
                 print(f"[MainWindow] AFTER _update_status: turns_in_phase={self.engine.phase_manager._turns_in_phase}")
             self._update_location_widget(force_location_id=result.new_location_id)  # V4 FIX: Pass new location
-            self._update_outfit_widget()  # Aggiunto aggiornamento outfit
+            self._update_outfit_widget(sd_prompt=result.sd_prompt)  # V4.6: Pass real SD prompt
             self._update_quest_tracker()
             self._update_story_beats()
             self._update_action_bars()
@@ -1897,6 +2003,35 @@ class MainWindow(QMainWindow):
     def _on_settings(self) -> None:
         """Open settings."""
         QMessageBox.information(self, "Settings", "Settings coming soon!")
+    
+    def _on_open_debug(self) -> None:
+        """Open debug panel for affinity and personality tweaking."""
+        if not hasattr(self, '_debug_window') or self._debug_window is None:
+            self._debug_window = DebugPanelWindow(self)
+        
+        if self.engine:
+            self._debug_window.set_engine(self.engine)
+        
+        self._debug_window.show()
+        self._debug_window.raise_()
+        self._debug_window.activateWindow()
+    
+    def _on_toggle_lora(self, checked: bool) -> None:
+        """Toggle LoRA mapping on/off."""
+        if hasattr(self, 'lora_mapping'):
+            self.lora_mapping.set_enabled(checked)
+            # V4.6: Sync with engine's lora_mapping
+            if self.engine and hasattr(self.engine, 'lora_mapping'):
+                self.engine.lora_mapping.set_enabled(checked)
+            # Aggiorna testo pulsante
+            if self._lora_toggle_action:
+                status = "ON" if checked else "OFF"
+                self._lora_toggle_action.setText(f"🎭 LoRA {status}")
+                # Cambia colore/icona in base allo stato
+                if checked:
+                    self._lora_toggle_action.setToolTip("LoRA attivi - Click per disattivare")
+                else:
+                    self._lora_toggle_action.setToolTip("LoRA disattivati - Click per attivare")
 
     def _on_advance_time(self) -> None:
         """Advance time of day when button is clicked."""

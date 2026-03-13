@@ -240,8 +240,25 @@ class CompanionStatusWidget(QGroupBox):
 
         self.companion_widgets: Dict[str, dict] = {}
 
+        # Ensure minimum size for visibility
+        self.setMinimumWidth(200)
+        self.setMinimumHeight(100)
+        
         # Style
         self.setStyleSheet("""
+            QGroupBox {
+                color: #fff;
+                font-weight: bold;
+                border: 1px solid #555;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
             QProgressBar {
                 border: 1px solid #444;
                 border-radius: 3px;
@@ -259,6 +276,8 @@ class CompanionStatusWidget(QGroupBox):
 
     def set_companions(self, companions: List[str]) -> None:
         """Initialize widgets for companions."""
+        print(f"[DEBUG CompanionStatus] set_companions called with: {companions}")
+        
         # Clear existing
         while self.layout().count():
             item = self.layout().takeAt(0)
@@ -304,6 +323,47 @@ class CompanionStatusWidget(QGroupBox):
 
         self.layout().addStretch()
 
+    def add_companion(self, name: str) -> None:
+        """Add a single companion widget."""
+        if name in self.companion_widgets:
+            return
+        
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setSpacing(2)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Header with name and emotion
+        header = QHBoxLayout()
+        lbl_name = QLabel(f"<b>{name}</b>")
+        lbl_name.setStyleSheet("color: #fff;")
+
+        lbl_emotion = QLabel("--")
+        lbl_emotion.setStyleSheet("color: #888; font-size: 10px;")
+
+        header.addWidget(lbl_name)
+        header.addStretch()
+        header.addWidget(lbl_emotion)
+
+        # Affinity bar
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setTextVisible(True)
+        bar.setFormat("%v/100")
+
+        container_layout.addLayout(header)
+        container_layout.addWidget(bar)
+
+        # Insert before the stretch
+        self.layout().insertWidget(self.layout().count() - 1, container)
+
+        self.companion_widgets[name] = {
+            'emotion': lbl_emotion,
+            'affinity': bar,
+        }
+        print(f"[DEBUG CompanionStatus] Added companion: {name}")
+
     def update_companion(
         self,
         name: str,
@@ -312,10 +372,14 @@ class CompanionStatusWidget(QGroupBox):
         emotion_icon: str = "😐",
     ) -> None:
         """Update companion display."""
-        print(f"[CompanionStatus] Updating {name}: affinity={affinity}, emotion={emotion}")
+        print(f"[DEBUG CompanionStatus] Updating {name}: affinity={affinity}")
+        print(f"[DEBUG CompanionStatus] Tracked companions: {list(self.companion_widgets.keys())}")
         if name not in self.companion_widgets:
-            print(f"[CompanionStatus] WARNING: {name} not in companion_widgets! Available: {list(self.companion_widgets.keys())}")
-            return
+            print(f"[DEBUG CompanionStatus] WARNING: {name} not tracked! Adding...")
+            # Auto-add if not exists
+            self.add_companion(name)
+            if name not in self.companion_widgets:
+                return
 
         widgets = self.companion_widgets[name]
         print(f"[CompanionStatus] Setting bar value to {affinity} for {name}")
@@ -605,11 +669,11 @@ class OutfitWidget(QGroupBox):
     def __init__(self, parent=None) -> None:
         """Initialize outfit widget."""
         super().__init__("👗 Outfit", parent)
-        self.setMaximumHeight(120)
-        self.setMinimumHeight(90)
+        self.setMaximumHeight(200)
+        self.setMinimumHeight(120)
         
         layout = QVBoxLayout(self)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
         
         # Current outfit display
         self.lbl_style = QLabel("Style: --")
@@ -626,6 +690,39 @@ class OutfitWidget(QGroupBox):
         self.lbl_components.setWordWrap(True)
         self.lbl_components.setStyleSheet("color: #888; font-size: 10px;")
         layout.addWidget(self.lbl_components)
+        
+        # V4.6: Positive Prompt Preview with Scrollbar
+        self.lbl_prompt_header = QLabel("📝 SD Prompt:")
+        self.lbl_prompt_header.setStyleSheet("font-weight: bold; color: #2196F3; font-size: 10px;")
+        self.lbl_prompt_header.setVisible(False)
+        layout.addWidget(self.lbl_prompt_header)
+        
+        # Use QTextEdit with scrollbar instead of QLabel
+        from PySide6.QtWidgets import QTextEdit
+        self.txt_positive_prompt = QTextEdit()
+        self.txt_positive_prompt.setReadOnly(True)
+        self.txt_positive_prompt.setMaximumHeight(80)
+        self.txt_positive_prompt.setStyleSheet("""
+            QTextEdit {
+                color: #aaa;
+                font-size: 9px;
+                background-color: #1a1a1a;
+                border: 1px solid #333;
+                border-radius: 3px;
+                padding: 4px;
+            }
+            QScrollBar:vertical {
+                background: #2a2a2a;
+                width: 10px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #555;
+                border-radius: 5px;
+            }
+        """)
+        self.txt_positive_prompt.setVisible(False)
+        layout.addWidget(self.txt_positive_prompt)
         
         # Buttons
         btn_layout = QHBoxLayout()
@@ -649,22 +746,49 @@ class OutfitWidget(QGroupBox):
         # Style list (hidden by default, shown on change)
         self.style_list: Optional[QListWidget] = None
         
-    def set_outfit(self, style: str, description: str, components: Optional[Dict[str, str]] = None) -> None:
+    def set_outfit(self, style: str, description: str, components: Optional[Dict[str, str]] = None,
+                   positive_prompt: Optional[str] = None) -> None:
         """Update outfit display.
         
         Args:
             style: Outfit style name
             description: Outfit description
             components: Optional component dict
+            positive_prompt: Optional SD positive prompt (visual + tags + LoRA)
         """
-        self.lbl_style.setText(f"Style: {style}")
-        self.lbl_description.setText(description or "No description")
-        
-        if components:
-            comp_text = " | ".join([f"{k}: {v}" for k, v in components.items()])
-            self.lbl_components.setText(comp_text)
+        # V4.6: If positive_prompt provided, show ONLY that (hide text descriptions)
+        if positive_prompt:
+            # Hide text description elements
+            self.lbl_style.setVisible(False)
+            self.lbl_description.setVisible(False)
+            self.lbl_components.setVisible(False)
+            self.btn_change.setVisible(False)
+            self.btn_modify.setVisible(False)
+            
+            # Show only positive prompt with scrollbar
+            self.lbl_prompt_header.setVisible(True)
+            self.txt_positive_prompt.setPlainText(positive_prompt)
+            self.txt_positive_prompt.setVisible(True)
         else:
-            self.lbl_components.setText("")
+            # Show text description elements
+            self.lbl_style.setVisible(True)
+            self.lbl_description.setVisible(True)
+            self.lbl_components.setVisible(True)
+            self.btn_change.setVisible(True)
+            self.btn_modify.setVisible(True)
+            
+            self.lbl_style.setText(f"Style: {style}")
+            self.lbl_description.setText(description or "No description")
+            
+            if components:
+                comp_text = " | ".join([f"{k}: {v}" for k, v in components.items()])
+                self.lbl_components.setText(comp_text)
+            else:
+                self.lbl_components.setText("")
+            
+            # Hide positive prompt
+            self.lbl_prompt_header.setVisible(False)
+            self.txt_positive_prompt.setVisible(False)
             
     def set_available_styles(self, styles: List[str]) -> None:
         """Set available wardrobe styles.
@@ -678,6 +802,13 @@ class OutfitWidget(QGroupBox):
         
     def clear(self) -> None:
         """Clear outfit display."""
+        # Reset visibility to default (show text, hide prompt)
+        self.lbl_style.setVisible(True)
+        self.lbl_description.setVisible(True)
+        self.lbl_components.setVisible(True)
+        self.lbl_prompt_header.setVisible(False)
+        self.lbl_positive_prompt.setVisible(False)
+        
         self.lbl_style.setText("Style: --")
         self.lbl_description.setText("No outfit set")
         self.lbl_components.setText("")

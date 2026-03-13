@@ -1373,6 +1373,9 @@ class TurnResult:
     companion_left_due_to_phase: bool = False  # True if companion left due to phase change
     needs_location_refresh: bool = False  # True if UI should refresh location image (solo mode)
     
+    # V4.6: SD Prompt used for image generation
+    sd_prompt: Optional[str] = None  # The actual positive prompt used for image generation
+    
     # Metadata
     turn_number: int = 0
     provider_used: str = ""

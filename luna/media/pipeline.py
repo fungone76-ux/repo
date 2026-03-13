@@ -23,6 +23,7 @@ class MediaResult:
     audio_path: Optional[str] = None
     video_path: Optional[str] = None
     error: Optional[str] = None
+    sd_prompt: Optional[str] = None  # V4.6: The actual positive prompt used
 
 
 class MediaPipeline:
@@ -35,8 +36,12 @@ class MediaPipeline:
     - Video → optional, requires RunPod
     """
     
-    def __init__(self) -> None:
-        """Initialize media pipeline."""
+    def __init__(self, lora_mapping: Optional[Any] = None) -> None:
+        """Initialize media pipeline.
+        
+        Args:
+            lora_mapping: Optional LoraMapping for dynamic LoRA selection
+        """
         self.settings = get_settings()
         
         # Clients (lazy init)
@@ -47,6 +52,9 @@ class MediaPipeline:
         # Audio settings (like v3)
         self.audio_enabled = True
         self.audio_muted = False
+        
+        # V4.6: LoRA mapping for dynamic LoRA selection
+        self._lora_mapping = lora_mapping
         
         # Callbacks for async updates
         self._on_image_ready: Optional[Callable[[str], None]] = None
@@ -153,13 +161,19 @@ class MediaPipeline:
         # Wait for all tasks
         for media_type, task in tasks:
             try:
-                path = await task
+                task_result = await task
                 if media_type == "image":
-                    result.image_path = path
+                    # V4.6: task_result is now (path, prompt) tuple
+                    if isinstance(task_result, tuple):
+                        result.image_path = task_result[0]
+                        result.sd_prompt = task_result[1]
+                    else:
+                        # Fallback for backward compatibility
+                        result.image_path = task_result
                 elif media_type == "audio":
-                    result.audio_path = path
+                    result.audio_path = task_result
                 elif media_type == "video":
-                    result.video_path = path
+                    result.video_path = task_result
             except Exception as e:
                 print(f"[MediaPipeline] {media_type} generation failed: {e}")
                 result.success = False
@@ -398,7 +412,7 @@ class MediaPipeline:
         location_visual_style: Optional[str] = None,
         aspect_ratio: str = "square",
         dop_reasoning: str = "",
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], Optional[str]]:
         """Generate image asynchronously.
         
         Args:
@@ -413,10 +427,32 @@ class MediaPipeline:
             dop_reasoning: Cinematographic reasoning for the aspect ratio choice
             
         Returns:
-            Path to generated image or None
+            Tuple of (path to generated image or None, positive prompt used or None)
         """
         if self.settings.mock_media:
-            return "storage/images/mock_image.png"
+            # Build prompt anyway for display
+            from luna.media.builders import ImagePromptBuilder
+            prompt_builder = ImagePromptBuilder()
+            # V4.6: Detect if LLM already specified composition in visual_en
+            composition_keywords = ['close-up', 'cowboy shot', 'wide shot', 'full body',
+                                    'from below', 'from above', 'portrait', 'upper body']
+            visual_has_composition = any(kw in visual_en.lower() for kw in composition_keywords)
+            composition = None if visual_has_composition else "medium_shot"
+            
+            mock_prompt = prompt_builder.build(
+                visual_description=visual_en,
+                tags=tags,
+                composition=composition,
+                character_name=companion_name,
+                outfit=outfit,
+                base_prompt=base_prompt,
+                secondary_characters=secondary_characters,
+                location_visual_style=location_visual_style,
+                aspect_ratio=aspect_ratio,
+                dop_reasoning=dop_reasoning,
+                lora_mapping=self._lora_mapping,  # V4.6: Dynamic LoRA selection
+            )
+            return ("storage/images/mock_image.png", mock_prompt.positive if hasattr(mock_prompt, 'positive') else str(mock_prompt))
         
         # Initialize client if needed
         if self._image_client is None:
@@ -425,7 +461,7 @@ class MediaPipeline:
         # If no client available, return placeholder
         if self._image_client is None:
             print("[MediaPipeline] No image client available, skipping generation")
-            return None
+            return (None, None)
         
         # Check if this is a generic NPC scene (not the main companion)
         effective_base_prompt = base_prompt
@@ -447,10 +483,18 @@ class MediaPipeline:
                 effective_visual = location_visual_style
                 print(f"[MediaPipeline] SOLO MODE: Using location visual style")
             
+            # V4.6: Detect if LLM already specified composition in visual_en
+            composition_keywords = ['close-up', 'cowboy shot', 'wide shot', 'full body',
+                                    'from below', 'from above', 'portrait', 'upper body']
+            visual_has_composition = any(kw in effective_visual.lower() for kw in composition_keywords)
+            
+            # Only use default medium_shot if LLM didn't specify composition
+            composition = None if visual_has_composition else "medium_shot"
+            
             prompt = prompt_builder.build(
                 visual_description=effective_visual,
                 tags=tags,
-                composition="medium_shot",
+                composition=composition,
                 character_name=companion_name,
                 outfit=outfit,
                 base_prompt=effective_base_prompt,  # Use possibly modified base prompt
@@ -458,6 +502,7 @@ class MediaPipeline:
                 location_visual_style=location_visual_style,  # V4: Pass for solo mode
                 aspect_ratio=aspect_ratio,  # DoP aspect ratio decision
                 dop_reasoning=dop_reasoning,  # DoP reasoning
+                lora_mapping=self._lora_mapping,  # V4.6: Dynamic LoRA selection
             )
             
             # Generate image
@@ -470,11 +515,11 @@ class MediaPipeline:
             if path and self._on_image_ready:
                 self._on_image_ready(str(path))
             
-            return str(path) if path else None
+            return (str(path) if path else None, prompt.positive if hasattr(prompt, 'positive') else str(prompt))
             
         except Exception as e:
             print(f"[MediaPipeline] Image generation failed: {e}")
-            return None
+            return (None, None)
     
     async def _generate_audio_async(
         self,

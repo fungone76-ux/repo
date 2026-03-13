@@ -85,7 +85,7 @@ class OutfitModifierSystem:
                 r"\b(si\s+veste\s+(le\s+)?scarp[ae]|calz[ao]\s+(le\s+)?scarp[ae])\b",
                 r"\b(mette\s+(i\s+)?tacchi|indossa\s+(i\s+)?tacchi)\b",
             ],
-            "values": {"remove": "barefoot", "add": "elegant high heels"}
+            "values": {"remove": "none", "add": "elegant high heels"}
         },
         
         # OUTERWEAR
@@ -388,6 +388,7 @@ class OutfitModifierSystem:
     # Human-readable descriptions for prompts
     COMPONENT_DESCRIPTIONS: Dict[str, Dict[str, str]] = {
         "shoes": {
+            "none": "barefoot, bare feet visible",
             "barefoot": "barefoot, bare feet visible",
             "elegant high heels": "wearing elegant high heels",
         },

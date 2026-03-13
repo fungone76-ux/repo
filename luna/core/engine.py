@@ -33,6 +33,7 @@ from luna.systems.quests import QuestActivationResult, QuestEngine, QuestUpdateR
 
 # MediaPipeline imported lazily to avoid circular imports
 from luna.media.pipeline import MediaResult
+from luna.media.lora_mapping import LoraMapping
 from luna.systems.personality import BehavioralUpdate, PersonalityEngine
 from luna.systems.memory import MemoryManager
 from luna.systems.location import LocationManager
@@ -44,10 +45,6 @@ from luna.systems.multi_npc import MultiNPCManager
 from luna.systems.affinity_calculator import get_calculator
 from luna.systems.state_memory import StateMemoryManager
 from luna.systems.npc_detector import NPCDetector
-from luna.systems.input_preprocessor import InputPreprocessor
-from luna.systems.response_processor import ResponseProcessor
-from luna.systems.state_updater import StateUpdater
-from luna.systems.media_coordinator import MediaCoordinator
 from luna.systems.turn_orchestrator import TurnOrchestrator
 from luna.core.debug_tracer import tracer, CheckStatus
 
@@ -132,6 +129,9 @@ class GameEngine:
         # Lazy import to avoid circular imports
         from luna.media.pipeline import MediaPipeline
         
+        # V4.6: LoRA mapping for dynamic clothing/NSFW LoRA
+        self.lora_mapping = LoraMapping()
+        
         # V4.2: Check for --no-media flag
         import os
         self._no_media = os.environ.get("LUNA_DEBUG_NO_MEDIA") == "1"
@@ -139,24 +139,7 @@ class GameEngine:
             print("[GameEngine] Media generation DISABLED (--no-media)")
             self.media_pipeline = None  # Will skip media generation
         else:
-            self.media_pipeline = MediaPipeline()
-        
-        # V4.3: New coordinator components (refactored from process_turn)
-        self.input_preprocessor = InputPreprocessor(self.world, self.state_manager)
-        self.response_processor = ResponseProcessor(max_retries=3)
-        # StateUpdater needs affinity calculator
-        from luna.systems.affinity_calculator import get_calculator
-        self.state_updater = StateUpdater(
-            state_manager=self.state_manager,
-            affinity_calculator=get_calculator(),
-            outfit_modifier=self.outfit_modifier,
-            quest_engine=self.quest_engine,
-            personality_engine=self.personality_engine,
-        )
-        self.media_coordinator = MediaCoordinator(
-            media_pipeline=self.media_pipeline,
-            enabled=not self._no_media,
- )
+            self.media_pipeline = MediaPipeline(lora_mapping=self.lora_mapping)
         
         # Multi-NPC System (CONSERVATIVE - enabled but with strict rules)
         self.multi_npc_manager = MultiNPCManager(
@@ -581,6 +564,29 @@ class GameEngine:
         from luna.systems.schedule_manager import ScheduleManager
         self.schedule_manager = ScheduleManager(game_state=game_state, world=self.world)
         
+        # V4.6: Restore companion location from saved game
+        saved_companion_location = game_state.flags.pop('_loaded_companion_location', None)
+        print(f"[GameEngine] Loading game - saved_companion_location: {saved_companion_location}")
+        print(f"[GameEngine] Active companion: {game_state.active_companion}")
+        print(f"[GameEngine] Time of day: {game_state.time_of_day}")
+        
+        if saved_companion_location and game_state.active_companion:
+            print(f"[GameEngine] Restoring {game_state.active_companion} to saved location: {saved_companion_location}")
+            # Force the companion's schedule to the saved location
+            if hasattr(self.schedule_manager, '_schedules') and game_state.active_companion in self.schedule_manager._schedules:
+                schedule = self.schedule_manager._schedules[game_state.active_companion]
+                # Create a fake schedule entry for the current time
+                from luna.systems.schedule_manager import ScheduleEntry
+                schedule.entries[game_state.time_of_day] = ScheduleEntry(
+                    location=saved_companion_location,
+                    activity="Loaded from save",
+                    outfit=game_state.companion_outfit
+                )
+                print(f"[GameEngine] Schedule entry created for {game_state.time_of_day}: {saved_companion_location}")
+            else:
+                print(f"[GameEngine] WARNING: Could not find schedule for {game_state.active_companion}")
+                print(f"[GameEngine] Schedules available: {list(self.schedule_manager._schedules.keys()) if hasattr(self.schedule_manager, '_schedules') else 'None'}")
+        
         # V4.2: Initialize Phase Manager (8 turns per phase)
         from luna.systems.phase_manager import PhaseManager, PhaseConfig
         self.phase_manager = PhaseManager(
@@ -595,6 +601,11 @@ class GameEngine:
         if phase_state:
             self.phase_manager.from_dict(phase_state)
             print(f"[GameEngine] Loaded phase manager state: {phase_state}")
+        
+        # V4.6: Verify companion location after phase manager init
+        if game_state.active_companion:
+            actual_location = self.schedule_manager.get_npc_current_location(game_state.active_companion)
+            print(f"[GameEngine] After load - {game_state.active_companion} is at: {actual_location}")
         
         # V4 Refactor: Initialize unified state-memory manager
         self.state_memory = StateMemoryManager(
@@ -1123,10 +1134,12 @@ class GameEngine:
         # -------------------------------------------------------------------
         # Get memory context if available (with query for semantic search)
         # V4 Refactor: Get memory context via unified manager
+        # V4.6: Filter by active companion for memory isolation
         memory_context = self.state_memory.get_memory_context(
             query=user_input,
             max_facts=self.settings.memory_max_context_facts,
             min_importance=self.settings.memory_min_importance,
+            companion_filter=game_state.active_companion,
         )
         
         # Add Multi-NPC context if sequence detected
@@ -1171,6 +1184,7 @@ class GameEngine:
             forced_poses=forced_poses,
             activity_system=self.activity_system,
             initiative_system=self.initiative_system,
+            schedule_manager=self.schedule_manager,
         )
         
         # V4.1: Add schedule context for active companion
@@ -1570,7 +1584,13 @@ class GameEngine:
         if self.phase_manager:
             game_state.flags["_phase_manager_state"] = self.phase_manager.to_dict()
         
-        await self.state_memory.save_all()
+        # V4.6: Get companion's current location for saving
+        companion_location = None
+        if self.schedule_manager and game_state.active_companion:
+            companion_location = self.schedule_manager.get_npc_current_location(game_state.active_companion)
+            print(f"[GameEngine] Saving companion_location: {companion_location}")
+        
+        await self.state_memory.save_all(companion_location=companion_location)
         
         # -------------------------------------------------------------------
         # STEP 10: LLM Personality Analysis (periodic) - FIRE AND FORGET

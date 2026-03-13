@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass
 
 from luna.core.models import CompositionType, OutfitComponent, OutfitState, SceneAnalysis
+from luna.media.lora_mapping import LoraMapping, select_loras_for_outfit
 
 
 class OutfitPromptMapper:
@@ -868,6 +869,7 @@ class ImagePromptBuilder:
         location_visual_style: Optional[str] = None,
         aspect_ratio: str = "square",
         dop_reasoning: str = "",
+        lora_mapping: Optional[LoraMapping] = None,
     ) -> ImagePrompt:
         """Build image prompt from basic parameters.
         
@@ -1021,6 +1023,12 @@ class ImagePromptBuilder:
                 positive_parts.append(f"({clean_desc}:1.3)")
             elif "nude" in clean_desc.lower() or "naked" in clean_desc.lower():
                 positive_parts.append(f"(nude:1.3), {clean_desc}")
+            elif "no " in clean_desc.lower() and ("bra" in clean_desc.lower() or "panties" in clean_desc.lower() or "bottomless" in clean_desc.lower()):
+                # V4.6: Partial nudity detected (no bra, no panties, bottomless)
+                positive_parts.append(f"(nude:1.3), {clean_desc}")
+            elif "barefoot" in clean_desc.lower() or "bare feet" in clean_desc.lower():
+                # V4.6: Just add the description, no extra tags
+                positive_parts.append(f"(barefoot:1.3), {clean_desc}")
             else:
                 positive_parts.append(f"(wearing {clean_desc}:1.3)")
             print(f"    [ImagePromptBuilder Outfit] Using: '{clean_desc[:60]}...'")
@@ -1029,31 +1037,140 @@ class ImagePromptBuilder:
             positive_parts.append(f"(wearing {outfit.style}:1.3)")
             print(f"    [ImagePromptBuilder Outfit] Using style: '{outfit.style}'")
         
+        # V4.6: Check for specific shoe/barefoot state in components
+        if outfit and outfit.components:
+            shoes_value = outfit.components.get("shoes", "")
+            if shoes_value in ["none", "barefoot"]:
+                # V4.6 CRITICAL: Check if pantyhose/stockings are present
+                # If pantyhose, feet are COVERED even without shoes - don't add barefoot
+                pantyhose_keywords = ['pantyhose', 'stockings', 'collant', 'tights']
+                has_pantyhose = any(kw in positive_parts[-1].lower() for kw in pantyhose_keywords) if positive_parts else False
+                
+                # Also check in outfit description and components
+                if outfit.description:
+                    has_pantyhose = has_pantyhose or any(kw in outfit.description.lower() for kw in pantyhose_keywords)
+                if outfit.components.get("pantyhose"):
+                    has_pantyhose = True
+                
+                if not has_pantyhose:
+                    # Add barefoot tag only if NO pantyhose
+                    barefoot_tags = "(barefoot:1.3), no shoes"
+                    if barefoot_tags not in positive_parts[-1] if positive_parts else True:
+                        positive_parts.append(barefoot_tags)
+                        print(f"    [ImagePromptBuilder] Barefoot component detected, adding tags")
+        
         # Add visual description (now cleaned of duplicates)
         if visual_desc_clean:
             positive_parts.append(visual_desc_clean)
         
-        # Add tags if any
+        # Add tags if any (filter out quality tags and outfit-conflicting tags)
         if tags:
-            positive_parts.append(", ".join(tags))
+            # V4.6: Filter tags to avoid duplicating quality tags from base_prompt
+            quality_tags = ['masterpiece', 'best quality', 'score_9', 'score_8_up', 'ultra detailed']
+            filtered_tags = [t for t in tags if not any(qt in t.lower() for qt in quality_tags)]
+            
+            # V4.6 CRITICAL: Filter tags that conflict with current outfit
+            # If outfit is nightwear/pajamas, remove conflicting tags like 'teacher suit', 'classroom', etc.
+            if outfit and outfit.style:
+                outfit_style_lower = outfit.style.lower()
+                conflicting_tags = []
+                
+                # Define conflicts: if outfit is X, remove tags suggesting Y
+                if outfit_style_lower in ['nightwear', 'pajamas', 'sleepwear', 'home', 'casual']:
+                    # At home - remove work/school related tags
+                    conflicting_tags = ['teacher suit', 'teacher', 'classroom', 'school uniform', 'office', 'work']
+                elif outfit_style_lower in ['teacher_suit', 'professional', 'uniform_mod']:
+                    # At work - remove home/sleep related tags
+                    conflicting_tags = ['pajamas', 'sleepwear', 'nightgown', 'bedroom', 'home clothes']
+                elif outfit_style_lower in ['gym_teacher', 'cheerleader', 'athletic', 'sportswear']:
+                    # At gym - remove classroom/office tags
+                    conflicting_tags = ['classroom', 'teacher suit', 'office', 'desk']
+                
+                if conflicting_tags:
+                    original_count = len(filtered_tags)
+                    filtered_tags = [t for t in filtered_tags if not any(ct in t.lower() for ct in conflicting_tags)]
+                    if len(filtered_tags) < original_count:
+                        print(f"    [ImagePromptBuilder] Removed {original_count - len(filtered_tags)} conflicting tags for outfit '{outfit.style}'")
+            
+            # V4.6: Remove tags that are already in visual_desc (avoid duplicates)
+            if filtered_tags:
+                visual_lower = visual_desc_clean.lower()
+                unique_tags = []
+                for tag in filtered_tags:
+                    # Check if tag content is already in visual description
+                    tag_normalized = tag.lower().replace('-', ' ')
+                    if tag_normalized not in visual_lower and tag.lower() not in visual_lower:
+                        unique_tags.append(tag)
+                    else:
+                        print(f"    [ImagePromptBuilder] Removing duplicate tag: '{tag}' (already in visual)")
+                
+                if unique_tags:
+                    positive_parts.append(", ".join(unique_tags))
         
-        # Add composition hints
-        composition_hints = {
-            "close_up": "close-up portrait, face focus, detailed face",
-            "medium_shot": "medium shot",  # Rimosso waist up e upper body!
-            "cowboy_shot": "cowboy shot, framing from knees up",
-            "wide_shot": "wide shot, full body, environmental",
-            "from_below": "shot from below, low angle",
-            "from_above": "shot from above, high angle",
-        }
-        if composition in composition_hints:
-            positive_parts.append(composition_hints[composition])
+        # Add composition hints ONLY if visual description doesn't already contain composition
+        # V4.6: Respect LLM/DoP choice - don't override with hardcoded composition
+        composition_keywords = ['close-up', 'close up', 'medium shot', 'cowboy shot', 'wide shot', 
+                                'full body', 'portrait', 'upper body', 'waist up',
+                                'from below', 'from above', 'low angle', 'high angle',
+                                'dutch angle', 'birds eye view', 'worm eye view']
+        visual_lower = visual_desc_clean.lower()
+        visual_has_composition = any(kw in visual_lower for kw in composition_keywords)
+        
+        print(f"    [ImagePromptBuilder] Visual has composition: {visual_has_composition}")
+        print(f"    [ImagePromptBuilder] Visual desc (first 80 chars): {visual_desc_clean[:80]}...")
+        
+        if not visual_has_composition:
+            # Only add default composition if LLM didn't specify one AND we have a default
+            if composition:
+                composition_hints = {
+                    "close_up": "close-up portrait, face focus, detailed face",
+                    "medium_shot": "medium shot",
+                    "cowboy_shot": "cowboy shot, framing from knees up",
+                    "wide_shot": "wide shot, full body, environmental",
+                    "from_below": "shot from below, low angle",
+                    "from_above": "shot from above, high angle",
+                }
+                if composition in composition_hints:
+                    positive_parts.append(composition_hints[composition])
+                    print(f"    [ImagePromptBuilder] Added default composition: {composition}")
+            else:
+                print(f"    [ImagePromptBuilder] No default composition specified, skipping")
+        else:
+            print(f"    [ImagePromptBuilder] Visual already has composition, skipping default")
         
         positive = ", ".join(filter(None, positive_parts))
         
-        # V4.4 FIX: Pantyhose feet coverage correction
-        # SD often renders feet as bare even with pantyhose in prompt
-        positive = self._fix_pantyhose_feet(positive)
+        # V4.6: Final cleanup - remove duplicate consecutive words and excessive commas
+        # Fix double commas and trim
+        positive = re.sub(r',\s*,', ',', positive)  # Fix double commas
+        positive = re.sub(r',\s*$', '', positive)   # Remove trailing comma
+        positive = positive.strip()
+        
+        # V4.6: Aggiungi LoRA dinamici dal mapping (clothing/NSFW) se disponibili
+        if lora_mapping and lora_mapping.is_enabled():
+            # Crea outfit state dict
+            outfit_state = None
+            if outfit:
+                outfit_state = {
+                    "description": getattr(outfit, 'description', ''),
+                    "style": getattr(outfit, 'style', ''),
+                    "components": getattr(outfit, 'components', {})
+                }
+            
+            # Seleziona LoRA extra
+            extra_loras = lora_mapping.select_loras(tags or [], character_name, outfit_state)
+            
+            if extra_loras:
+                # Costruisce stringa LoRA: <lora:name:weight>
+                lora_tokens = [f"<lora:{name}:{weight:.2f}>" for name, weight in extra_loras]
+                lora_string = " ".join(lora_tokens)
+                
+                # Aggiunge all'inizio del prompt (prima del resto)
+                positive = f"{lora_string}, {positive}"
+                print(f"[ImagePromptBuilder] LoRA attivi: {[n for n, _ in extra_loras]}")
+        
+        # V4.6: Removed automatic pantyhose feet fix - too aggressive
+        # Only add feet tags if explicitly requested by LLM or player
         
         # Build negative prompt
         negative = NEGATIVE_BASE

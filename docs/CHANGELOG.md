@@ -1,5 +1,145 @@
 # Changelog - Luna RPG v4
 
+## [2026-03-10] - V4.6 Memory Isolation, Debug Panel & LoRA System
+
+### 🔒 Memory Isolation per Companion
+
+**File:** `src/luna/systems/memory.py`
+
+I messaggi sono ora isolati per companion:
+
+- **Metadati:** Ogni messaggio in ChromaDB include `companion_name`
+- **Filtraggio:** Ricerca semantica filtrata per companion attivo
+- **Privacy:** Quando scrivi a Luna, Stella non "vede" quei messaggi
+
+**Metodi aggiornati:**
+```python
+add_message(..., companion_name="luna")
+search(query, companion_name="luna")  # Filtra automaticamente
+```
+
+### 🎮 Debug Panel
+
+**File:** `src/luna/ui/debug_panel.py`
+
+Nuova finestra di debug accessibile dal toolbar (🔧):
+
+- **Affinity Slider:** 0-100 con pulsanti +/- 5
+- **Personality Traits:** 5 dimensioni (Dominance, Playfulness, Affection, Formality, Discipline) -100 to +100
+- **Apply Changes:** Salva nel database in tempo reale
+
+### 🎭 LoRA System per Outfit
+
+**Nuovo File:** `src/luna/media/lora_mapping.py`
+
+15 LoRA configurati per abbigliamento contestuale:
+
+| LoRA | Keywords |
+|------|----------|
+| Bikini | bikini, costume da bagno |
+| Lingerie | lingerie, intimo |
+| Yoga_Pants | yoga pants, leggings |
+| Slutty_Dress | slutty dress, vestito succinto |
+| Sexy_Clothing | sexy clothing, abbigliamento sexy |
+| Dongtan_Dress | dongtan, two-piece |
+| Oily_Black_Silk | oily, black silk, latex |
+| Towel | towel, asciugamano |
+| Pantyhose | pantyhose, collant, stockings |
+| Sportswear | sportswear, gym clothes |
+| +5 NSFW Poses | (configurabili) |
+
+**Toggle UI:** Toolbar button 🎭 LoRA ON/OFF
+- Quando ON: LoRA selezionati automaticamente in base all'outfit
+- Quando OFF: Solo base prompt character LoRA
+
+### 📝 OutfitWidget - Real SD Prompt
+
+**Files:** `src/luna/ui/widgets.py`, `src/luna/media/pipeline.py`, `src/luna/systems/turn_orchestrator.py`
+
+L'OutfitWidget ora mostra il **prompt reale** usato per generare l'immagine (non più quello teorico):
+
+```
+📝 SD Prompt:
+<lora:Luna_XL:0.8>, 1girl, Luna, blue eyes, silver hair, gym background, 
+basketball court, (cheerleader outfit:1.2), pom-poms, (smiling:1.1), 
+from below, depth of field...
+```
+
+**Cosa include il prompt reale:**
+- Character LoRA e base prompt
+- Outfit attuale (dinamico per location)
+- Tags dall'input (pose, azioni, emozioni)
+- Visual description della scena
+- LoRA selezionati dinamicamente
+
+**Flusso dati:**
+```
+ImagePromptBuilder.build() → MediaPipeline → TurnResult.sd_prompt → OutfitWidget
+```
+
+### 🧹 Cleanup V4.3
+
+Rimossi 4 file orfani non più utilizzati dopo il refactoring:
+- `input_preprocessor.py`
+- `response_processor.py`
+- `state_updater.py`
+- `media_coordinator.py`
+
+### 🐛 Bug Fix - Companion Switch Location Check
+
+**File:** `src/luna/systems/turn_orchestrator.py`
+
+**Problema:** Quando un NPC se ne andava (es. Luna va in ufficio), il sistema poteva comunque switchare automaticamente a lei se il player menzionava il suo nome, anche se non era più nella stessa location.
+
+**Fix:** `_handle_companion_switch()` ora verifica che l'NPC menzionato sia effettivamente nella stessa location del player prima di fare lo switch:
+
+```python
+mentioned_location = self.schedule_manager.get_npc_current_location(mentioned)
+if mentioned_location and mentioned_location != player_location:
+    # Non fare switch - NPC è in un'altra location
+    print(f"Cannot switch to '{mentioned}' - they are at '{mentioned_location}'")
+```
+
+**Risultato:** Se Luna se ne va, rimani in `_solo_` mode a meno che non la incontri fisicamente o non inizi una comunicazione remota.
+
+### 🐛 Bug Fix - Personaggi Presenti UI
+
+**File:** `src/luna/ui/main_window.py`
+
+**Problema:** Il widget "Personaggi presenti" mostrava NPC basandosi sulla definizione statica `available_characters` della location, ignorando lo schedule. Risultato: Luna appariva come presente anche quando era nel suo ufficio.
+
+**Fix:** `_update_location_widget()` ora usa `schedule_manager.get_npc_current_location()` per ogni companion:
+
+```python
+for companion_name in self.engine.world.companions.keys():
+    npc_location = self.engine.schedule_manager.get_npc_current_location(companion_name)
+    if npc_location == current_location_id:
+        characters_present.append(companion_name)
+```
+
+**Risultato:** La lista mostra SOLO gli NPC che sono effettivamente nella stessa location del player, in tempo reale.
+
+### 🐛 Bug Fix - Outfit Non Aggiornato Dopo Switch
+
+**File:** `src/luna/systems/turn_orchestrator.py`
+
+**Problema:** Quando switchavi companion (es. incontri Stella in palestra), l'outfit non veniva aggiornato per la nuova location. Risultato: Stella in palestra con uniforme scolastica invece che cheerleader.
+
+**Causa:** L'ordine delle operazioni:
+1. Outfit update (per il companion precedente)
+2. Companion switch (al nuovo NPC)
+3. ❌ Mancava outfit update per il nuovo companion
+
+**Fix:** Dopo `_handle_companion_switch()`, se lo switch è avvenuto:
+```python
+if switched_companion and game_state.active_companion != old_companion:
+    self._update_outfit_for_context(game_state)
+```
+
+**Risultato:** Ora quando incontri un NPC in una nuova location, il suo outfit si aggiorna automaticamente (es. Stella in palestra → cheerleader).
+
+---
+
 ## [2026-03-09] - V4.5 Remote Communication, Invitations & Outfit System
 
 ### 📱 Comunicazione Remota (Phone/Message)
@@ -125,9 +265,125 @@ affinity_result = calculator.calculate(
 | `affinity_calculator.py` | Log debug per pattern matching |
 | `prompt_builder.py` | Fix accesso a schedule come dict |
 
-### 📝 TODO per V4.6
+## [2026-03-10] - V4.6 Memory Isolation, Debug Panel & LoRA System
 
-- **Memory Isolation:** I messaggi devono essere isolati per companion (Stella non deve vedere i messaggi a Luna)
+### 🔒 Memory Isolation (Completato)
+
+**Problema:** I messaggi non erano isolati per companion. Stella poteva vedere i messaggi inviati a Luna nella ricerca semantica.
+
+**Soluzione:** Aggiunto `companion_name` ai metadati ChromaDB e filtro per companion nelle query.
+
+**Implementazione:**
+- `memory.py`: `companion_name` nei metadati di ogni messaggio
+- `memory.py`: `search()` e `get_memory_context()` filtrano per companion
+- `state_memory.py`: Propaga il filtro ai livelli superiori
+- `turn_orchestrator.py`: Passa `active_companion` a tutte le operazioni memoria
+- `engine.py`, `intro.py`: Aggiornati per passare companion info
+
+**Logica di filtro:**
+- Quando companion è specificato → vedi solo messaggi di quel companion
+- Quando companion è `_solo_` → vedi tutto (player parla da solo)
+- Fatti senza companion → visibili a tutti
+
+### 🎛️ Debug Panel (Nuovo)
+
+**File:** `src/luna/ui/debug_panel.py`
+
+Pannello di debug per testare affinity e personalità in tempo reale:
+
+```
+┌─────────────────────────────────────────┐
+│ [Luna] [Stella] [Maria]                 │
+│                                         │
+│ ❤️ Affinity: [████████░░] 45  [+] [-]  │
+│                                         │
+│ 🎭 Personality:                         │
+│ • Attraction:  [████░░░░░░] 40  [+] [-]│
+│ • Curiosity:   [██████░░░░] 60  [+] [-]│
+│ • Trust:       [███████░░░] 70  [+] [-]│
+└─────────────────────────────────────────┘
+```
+
+**Funzionalità:**
+- Slider + bottoni +/- per cambiare valori istantaneamente
+- Affinity ≥ 60 → Si attiva automaticamente la quest "Lezione Privata"
+- Personality changes → Comportamento NPC cambia immediatamente
+- Tab per ogni NPC (Luna, Stella, Maria)
+- Pulsante "🔄 Refresh" per ricaricare valori dal gioco
+- Pulsante "⚠️ Reset All" per azzerare tutto
+
+**Accesso:** Toolbar → "🔧 Debug"
+
+### 🎭 LoRA Mapping System (Nuovo)
+
+**File:** `src/luna/media/lora_mapping.py`
+
+Sistema automatico per selezionare LoRA in base all'outfit:
+
+**15 LoRA Configurati:**
+
+| LoRA | Keywords IT | Peso |
+|------|-------------|------|
+| `Bikini_XL_v2` | bikini, costume, bagno, mare, piscina | 0.55 |
+| `Lingerie_Lace_XL` | lingerie, intimo, mutande, pizzo, perizoma | 0.60 |
+| `Yoga_Pants_XL` | yoga pants, leggings, tuta, palestra | 0.55 |
+| `Slutty_Dress_XL` | slutty dress, vestito sexy, provocante | 0.60 |
+| `Sexy_Clothing_XL` | sexy clothing, abbigliamento sexy, hot | 0.55 |
+| `Dongtan_Dress_XL` | evening dress, abito da sera, elegante | 0.55 |
+| `Oily_Black_Silk_OnePiece_XL` | wet, bagnato, see-through, oleoso | 0.55 |
+| `Towel_XL` | towel, asciugamano, dopo doccia | 0.60 |
+| `Pantyhose_XL` | pantyhose, collant, calze, autoreggenti | 0.50 |
+| `Sportswear_XL` | sportswear, sport, palestra, fitness | 0.55 |
+| `Masturbation_Pose_XL` | masturbation, si masturba, si tocca | 0.60 |
+| `Self_Anal_Fisting_XL` | anal fisting, auto fisting, estremo | 0.65 |
+| `Dildo_Masturbation_XL` | dildo, vibratore, giocattolo | 0.60 |
+| `Table_Humping_XL` | table humping, sfregare tavolo | 0.60 |
+| `Pillow_Humping_XL` | pillow humping, cuscino, sfregare | 0.60 |
+
+**Attivazione Automatica:**
+```
+Input: "Luna si toglie la camicia, resta in lingerie bagnata"
+↓
+Keywords: "lingerie" + "bagnata"
+↓
+LoRA attivi: Lingerie_Lace_XL (0.60) + Oily_Black_Silk_OnePiece_XL (0.55)
+```
+
+**Toggle UI:**
+- Pulsante "🎭 LoRA ON/OFF" nella toolbar
+- Quando OFF: nessun LoRA clothing/NSFW applicato
+- Quando ON: LoRA selezionati automaticamente
+- LoRA personaggio (stsDebbie, etc.) sempre attivi
+
+**Integrazione:** `ImagePromptBuilder.build()` aggiunge i LoRA all'inizio del prompt
+
+### 🧹 Cleanup V4.3
+
+**Rimossi 4 file orfani** (creati ma mai utilizzati):
+- `input_preprocessor.py` → logica inline in `turn_orchestrator.py`
+- `response_processor.py` → logica inline in `turn_orchestrator.py`
+- `state_updater.py` → logica inline in `turn_orchestrator.py`
+- `media_coordinator.py` → logica inline in `turn_orchestrator.py`
+
+**Motivo:** Il `turn_orchestrator.py` (1691 righe) contiene tutta la logica inline e funziona correttamente. I file erano dead code.
+
+### 📁 Files Modificati V4.6
+
+| File | Modifica |
+|------|----------|
+| `debug_panel.py` | **NUOVO** - Pannello debug affinity/personality |
+| `lora_mapping.py` | **NUOVO** - Sistema LoRA automatico con 15 LoRA |
+| `memory.py` | Memory isolation (companion metadata + filter) |
+| `state_memory.py` | Propaga companion_filter |
+| `turn_orchestrator.py` | Passa active_companion alle query memoria |
+| `builders.py` | Integra LoRA mapping nel prompt generation |
+| `main_window.py` | Toggle LoRA + pulsante Debug |
+| `engine.py`, `intro.py` | Memory isolation + cleanup orfani |
+| `AGENTS.md` | Documentazione aggiornata |
+
+---
+
+### 📝 TODO per V4.7
 
 ### 📱 Comunicazione Remota (Phone/Message)
 

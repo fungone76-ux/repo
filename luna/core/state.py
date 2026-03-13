@@ -150,11 +150,36 @@ class StateManager:
         
         # Create game state
         print(f"[StateManager.load] Loaded location from DB: {session_model.current_location}")
+        
+        # V4.6 FIX: Robust time_of_day loading with fallback
+        time_value = session_model.time_of_day
+        try:
+            if time_value and time_value in [t.value for t in TimeOfDay]:
+                loaded_time = TimeOfDay(time_value)
+            elif time_value and time_value.upper() in [t.name for t in TimeOfDay]:
+                # Handle enum name (e.g., "AFTERNOON" -> TimeOfDay.AFTERNOON)
+                loaded_time = TimeOfDay[time_value.upper()]
+            else:
+                print(f"[StateManager.load] Invalid time_of_day in DB: {time_value}, defaulting to MORNING")
+                loaded_time = TimeOfDay.MORNING
+        except (ValueError, KeyError) as e:
+            print(f"[StateManager.load] Error parsing time_of_day '{time_value}': {e}, defaulting to MORNING")
+            loaded_time = TimeOfDay.MORNING
+        
+        print(f"[StateManager.load] Loaded time_of_day: {loaded_time}")
+        
+        # V4.6: Load companion location and store in flags for GameEngine to use
+        loaded_flags = session_model.flags or {}
+        companion_location = getattr(session_model, 'companion_location', None)
+        if companion_location:
+            loaded_flags['_loaded_companion_location'] = companion_location
+            print(f"[StateManager.load] Loaded companion_location: {companion_location}")
+        
         state = GameState(
             session_id=session_model.id,
             world_id=session_model.world_id,
             turn_count=session_model.turn_count,
-            time_of_day=TimeOfDay(session_model.time_of_day),
+            time_of_day=loaded_time,
             current_location=session_model.current_location,
             active_companion=session_model.active_companion,
             companion_outfit=session_model.companion_outfit,
@@ -162,7 +187,7 @@ class StateManager:
             player=player,
             npc_states=npc_states,
             affinity=session_model.affinity or {},
-            flags=session_model.flags or {},
+            flags=loaded_flags,
         )
         
         # Load quest states
@@ -176,12 +201,13 @@ class StateManager:
         self._current = state
         return state
     
-    async def save(self, db: AsyncSession, name: str = None) -> bool:
+    async def save(self, db: AsyncSession, name: str = None, companion_location: str = None) -> bool:
         """Save current game state.
         
         Args:
             db: Database session
             name: Optional custom save name
+            companion_location: V4.6 - Location where the active companion was saved
             
         Returns:
             True if saved successfully
@@ -207,12 +233,18 @@ class StateManager:
         # V4.2 FIX: Use dict() copies for JSON fields to ensure SQLAlchemy detects changes
         # When the same dict object is modified in-place and passed, SQLAlchemy may not detect changes
         print(f"[StateManager.save] Saving location: {state.current_location}")
+        
+        # V4.6 DEBUG: Log time_of_day being saved
+        time_to_save = state.time_of_day.value if hasattr(state.time_of_day, 'value') else str(state.time_of_day)
+        print(f"[StateManager.save] Saving time_of_day: {time_to_save}")
+        
         update_data = {
             "turn_count": state.turn_count,
-            "time_of_day": state.time_of_day.value if hasattr(state.time_of_day, 'value') else str(state.time_of_day),
+            "time_of_day": time_to_save,
             "current_location": state.current_location,
             "active_companion": state.active_companion,
             "companion_outfit": state.companion_outfit,
+            "companion_location": companion_location,  # V4.6: Save companion's location
             "outfit_states": outfit_data,
             "player_state": state.player.model_dump(),
             "npc_states": npc_data,

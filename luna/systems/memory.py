@@ -170,13 +170,14 @@ class SemanticMemoryStore:
         """True if semantic search is available."""
         return self._available and self._collection is not None
     
-    def add_memory(self, memory_id: str, content: str, metadata: Dict[str, Any]) -> bool:
+    def add_memory(self, memory_id: str, content: str, metadata: Dict[str, Any], companion_name: Optional[str] = None) -> bool:
         """Add memory to semantic store.
         
         Args:
             memory_id: Unique memory identifier
             content: Memory content to embed
             metadata: Associated metadata
+            companion_name: Optional companion name for memory isolation
             
         Returns:
             True if added successfully
@@ -186,6 +187,10 @@ class SemanticMemoryStore:
         
         try:
             embedding = self._embedder.encode(content).tolist()
+            
+            # V4.6: Add companion_name to metadata for isolation
+            if companion_name:
+                metadata = {**metadata, "companion": companion_name}
             
             self._collection.add(
                 ids=[memory_id],
@@ -198,12 +203,13 @@ class SemanticMemoryStore:
             logger.error(f"Failed to add semantic memory: {e}")
             return False
     
-    def search(self, query: str, k: int = 5) -> List[Tuple[str, float, str]]:
+    def search(self, query: str, k: int = 5, companion_name: Optional[str] = None) -> List[Tuple[str, float, str]]:
         """Search memories by semantic similarity.
         
         Args:
             query: Search query
             k: Number of results
+            companion_name: Optional filter by companion for memory isolation (V4.6)
             
         Returns:
             List of (memory_id, score, content) tuples
@@ -214,20 +220,36 @@ class SemanticMemoryStore:
         try:
             query_embedding = self._embedder.encode(query).tolist()
             
+            # V4.6: Request more results to allow for post-filtering
+            fetch_k = k * 3 if companion_name and companion_name != "_solo_" else k
+            
             results = self._collection.query(
                 query_embeddings=[query_embedding],
-                n_results=k,
-                include=["documents", "distances"]
+                n_results=fetch_k,
+                include=["documents", "distances", "metadatas"]
             )
             
-            # Convert distances to similarity scores (Chroma returns distances)
-            # Cosine distance to similarity: 1 - distance
+            # Convert distances to similarity scores and filter by companion
             memories = []
             for i, memory_id in enumerate(results["ids"][0]):
                 distance = results["distances"][0][i]
                 content = results["documents"][0][i]
+                metadata = results["metadatas"][0][i] if results["metadatas"] else {}
                 similarity = 1.0 - distance  # Convert to similarity
+                
+                # V4.6: Filter by companion if specified
+                if companion_name and companion_name != "_solo_":
+                    # Get companion info from metadata (can be 'companion' or 'npc')
+                    mem_companion = metadata.get("companion") or metadata.get("npc")
+                    # Include if: matches companion, is solo mode, or has no companion (legacy)
+                    if mem_companion and mem_companion not in (companion_name, "_solo_"):
+                        continue  # Skip memories from other companions
+                
                 memories.append((memory_id, similarity, content))
+                
+                # Stop once we have k results
+                if len(memories) >= k:
+                    break
             
             return memories
             
@@ -371,6 +393,7 @@ class MemoryManager:
         turn_number: int,
         visual_en: str = "",
         tags_en: Optional[List[str]] = None,
+        companion_name: Optional[str] = None,
     ) -> None:
         """Add message to history.
         
@@ -380,6 +403,7 @@ class MemoryManager:
             turn_number: Game turn
             visual_en: Visual description
             tags_en: SD tags
+            companion_name: Companion name for memory isolation (V4.6)
         """
         # Add to cache
         message = ConversationMessage(
@@ -403,8 +427,22 @@ class MemoryManager:
                 tags_en or [],
             )
         
+        # V4.6: Also add to semantic store with companion metadata for isolation
+        if self._semantic_store and self._semantic_store.is_available and companion_name:
+            self._semantic_store.add_memory(
+                memory_id=f"msg_{self.session_id}_{turn_number}_{role}",
+                content=f"[{role.upper()}]: {content}",
+                metadata={
+                    "turn": turn_number,
+                    "role": role,
+                    "type": "message",
+                },
+                companion_name=companion_name
+            )
+        
         # V4: Log message addition
-        print(f"[Memory] 📝 Added {role} message (turn {turn_number}): {content[:50]}...")
+        companion_tag = f" [{companion_name}]" if companion_name else ""
+        print(f"[Memory] 📝 Added {role} message{companion_tag} (turn {turn_number}): {content[:50]}...")
         
         # Check if compression needed
         if len(self._recent_messages) > self.history_limit:
@@ -501,6 +539,7 @@ class MemoryManager:
         k: int = 5,
         min_importance: int = 1,
         use_semantic: Optional[bool] = None,
+        companion_filter: Optional[str] = None,
     ) -> List[MemorySearchResult]:
         """Search memories using keyword and/or semantic matching.
         
@@ -509,6 +548,7 @@ class MemoryManager:
             k: Number of results to return
             min_importance: Minimum importance threshold
             use_semantic: Force semantic search (None = auto)
+            companion_filter: Filter by companion name for isolation (V4.6)
             
         Returns:
             List of search results sorted by relevance
@@ -543,7 +583,7 @@ class MemoryManager:
         
         # 2. Semantic search (if available and requested)
         if use_semantic and self._semantic_store and self._semantic_store.is_available:
-            semantic_results = self._semantic_store.search(query, k=k * 2)
+            semantic_results = self._semantic_store.search(query, k=k * 2, companion_name=companion_filter)
             
             for memory_id, score, _ in semantic_results:
                 try:
@@ -588,6 +628,7 @@ class MemoryManager:
         query: Optional[str] = None,
         max_facts: int = 10,
         min_importance: int = 4,
+        companion_filter: Optional[str] = None,
     ) -> str:
         """Build memory context for LLM prompt.
         
@@ -595,18 +636,20 @@ class MemoryManager:
             query: Optional query to find relevant memories
             max_facts: Max facts to include
             min_importance: Minimum importance threshold
+            companion_filter: Filter by companion for memory isolation (V4.6)
             
         Returns:
             Formatted memory context
         """
         lines = ["=== IMPORTANT MEMORY ==="]
         
-        # V4: Debug logging
-        print(f"[Memory] Query: '{query[:30]}...' | Semantic: {self.enable_semantic} | Total facts: {len(self._facts)}")
+        # V4.6: Debug logging with companion filter
+        companion_tag = f" [companion={companion_filter}]" if companion_filter else ""
+        print(f"[Memory] Query: '{query[:30]}...' | Semantic: {self.enable_semantic} | Total facts: {len(self._facts)}{companion_tag}")
         
         if query and (self.enable_semantic or len(self._facts) > 20):
-            # Use search for targeted retrieval
-            results = self.search_memories(query, k=max_facts, min_importance=min_importance)
+            # Use search for targeted retrieval with companion filter
+            results = self.search_memories(query, k=max_facts, min_importance=min_importance, companion_filter=companion_filter)
             memories = [r.memory for r in results]
             print(f"[Memory] Search returned {len(memories)} results")
             for r in results[:3]:

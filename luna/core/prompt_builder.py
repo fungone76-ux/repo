@@ -46,6 +46,7 @@ class PromptBuilder:
         forced_poses: Optional[str] = None,
         activity_system: Optional[Any] = None,
         initiative_system: Optional[Any] = None,
+        schedule_manager: Optional[Any] = None,  # V4.6: For companion location
     ) -> str:
         """Build complete system prompt.
         
@@ -60,6 +61,7 @@ class PromptBuilder:
             event_manager: For active global events context
             switched_from: Previous companion name if just switched
             is_temporary: True if current companion is temporary NPC
+            schedule_manager: V4.6 - For companion's current location
             forced_poses: Optional forced physical poses from player input
             
         Returns:
@@ -152,7 +154,7 @@ class PromptBuilder:
         if companion:
             sections.extend([
                 "=== ACTIVE COMPANION ===",
-                self._build_companion_context(companion, game_state),
+                self._build_companion_context(companion, game_state, schedule_manager),
                 "",
             ])
             
@@ -841,12 +843,14 @@ Respond in JSON format."""
         self,
         companion: CompanionDefinition,
         game_state: GameState,
+        schedule_manager: Optional[Any] = None,
     ) -> str:
         """Build companion context.
         
         Args:
             companion: Companion definition
             game_state: Current game state
+            schedule_manager: V4.6 - For companion's current location
             
         Returns:
             Formatted context
@@ -858,6 +862,12 @@ Respond in JSON format."""
             f"Personality: {companion.base_personality}",
             f"Current Affinity: {game_state.affinity.get(companion.name, 0)}/100",
         ]
+        
+        # V4.6: Add companion's current location
+        if schedule_manager:
+            companion_location = schedule_manager.get_npc_current_location(companion.name)
+            if companion_location:
+                lines.append(f"Current Location: {companion_location}")
         
         # Emotional state (detailed)
         npc_state = game_state.npc_states.get(companion.name)

@@ -145,8 +145,9 @@ class TurnOrchestrator:
         print(f"[TurnOrchestrator] Location: {game_state.current_location}")
         print(f"{'='*60}\n")
         
-        # V4.5: Update outfit based on location and time
-        self._update_outfit_for_context(game_state)
+        # V4.6: REMOVED automatic outfit override - outfit persists from scene/scenario
+        # The outfit is now controlled by: user input -> LLM response -> outfit_modifier
+        # _update_outfit_for_context is only called when companion changes or on movement
         
         self.tracer.start_turn(turn_number, user_input)
         
@@ -263,6 +264,11 @@ class TurnOrchestrator:
             switched_companion, is_temporary = await self._handle_companion_switch(
                 user_input, game_state, old_companion
             )
+            
+            # V4.6 FIX: Update outfit for new companion after switch
+            if switched_companion and game_state.active_companion != old_companion:
+                print(f"[TurnOrchestrator] Companion switched {old_companion} -> {game_state.active_companion}, updating outfit")
+                self._update_outfit_for_context(game_state)
         
         # -------------------------------------------------------------------
         # STEP 0c: Multi-NPC Check
@@ -333,11 +339,12 @@ class TurnOrchestrator:
                 turn_number=game_state.turn_count,
             )
         
-        # Save messages to memory
+        # V4.6: Save messages to memory with companion isolation
         await self.state_memory.add_message(
             role="user",
             content=user_input,
             turn_number=game_state.turn_count,
+            companion_name=game_state.active_companion,
         )
         await self.state_memory.add_message(
             role="assistant",
@@ -345,6 +352,7 @@ class TurnOrchestrator:
             turn_number=game_state.turn_count,
             visual_en=llm_response.visual_en,
             tags_en=llm_response.tags_en,
+            companion_name=game_state.active_companion,
         )
         
         # V4.2: Auto-freeze turns during important scenes
@@ -609,11 +617,12 @@ class TurnOrchestrator:
             left_message = movement_result.companion_message or f"{old_companion} rimane indietro."
             combined_text = f"{transition_text}\n\n{left_message}"
             
-            # Save user message to memory
+            # V4.6: Save user message to memory with companion isolation
             await self.state_memory.add_message(
                 role="user",
                 content=user_input,
                 turn_number=game_state.turn_count,
+                companion_name=game_state.active_companion,
             )
             await self.state_memory.save_all()
             
@@ -681,6 +690,7 @@ class TurnOrchestrator:
                 role="user",
                 content=user_input,
                 turn_number=game_state.turn_count,
+                companion_name=game_state.active_companion,
             )
             await self.state_memory.save_all()
             
@@ -900,11 +910,26 @@ class TurnOrchestrator:
         print(f"[TurnOrchestrator] Mentioned companion: '{mentioned}'")
         
         if mentioned and mentioned != game_state.active_companion:
-            success = self.state_manager.switch_companion(mentioned)
-            if success:
-                self.engine.companion = mentioned
-                print(f"[TurnOrchestrator] Auto-switched: {old_companion} -> {mentioned}")
-                return True, False
+            # V4.6 FIX: Check if mentioned NPC is in the same location as player
+            mentioned_location = None
+            if self.schedule_manager:
+                mentioned_location = self.schedule_manager.get_npc_current_location(mentioned)
+            
+            player_location = game_state.current_location
+            
+            # Allow switch only if NPC is in same location OR if we're in remote communication mode
+            can_switch = True
+            if mentioned_location and mentioned_location != player_location:
+                # NPC is in different location - don't auto-switch
+                print(f"[TurnOrchestrator] Cannot switch to '{mentioned}' - they are at '{mentioned_location}' (player at '{player_location}')")
+                can_switch = False
+            
+            if can_switch:
+                success = self.state_manager.switch_companion(mentioned)
+                if success:
+                    self.engine.companion = mentioned
+                    print(f"[TurnOrchestrator] Auto-switched: {old_companion} -> {mentioned}")
+                    return True, False
         
         # Check for generic NPC
         if not mentioned:
@@ -1019,11 +1044,12 @@ class TurnOrchestrator:
         remote_comm_result: Optional[RemoteCommunicationResult] = None,
     ) -> str:
         """Build complete system prompt for LLM."""
-        # Get memory context
+        # V4.6: Get memory context filtered by active companion for isolation
         memory_context = self.state_memory.get_memory_context(
             query=user_input,
             max_facts=self.settings.memory_max_context_facts,
             min_importance=self.settings.memory_min_importance,
+            companion_filter=game_state.active_companion,
         )
         
         # V4.5: Add remote communication context if active
@@ -1178,9 +1204,9 @@ class TurnOrchestrator:
         }
         print(f"[Affinity] Python calculated: {affinity_result.delta} ({affinity_result.reason})")
         
-        # Validate outfit changes
-        if updates and hasattr(updates, 'outfit_change') and updates.outfit_change:
-            result['outfit_change'] = updates.outfit_change
+        # V4.6: Validate outfit_update from LLM (not outfit_change)
+        if updates and hasattr(updates, 'outfit_update') and updates.outfit_update:
+            result['outfit_update'] = updates.outfit_update
         
         # Validate new fact
         if updates and hasattr(updates, 'new_fact') and updates.new_fact:
@@ -1202,7 +1228,56 @@ class TurnOrchestrator:
                     # Clamp
                     game_state.affinity[npc] = max(0, min(100, game_state.affinity[npc]))
         
-        # Outfit changes handled by outfit_modifier
+        # V4.6: Apply outfit updates from LLM response
+        if 'outfit_update' in validated_updates:
+            self._apply_outfit_update(validated_updates['outfit_update'], game_state)
+    
+    def _apply_outfit_update(self, outfit_update: Any, game_state: GameState) -> None:
+        """Apply outfit update from LLM response.
+        
+        V4.6: The LLM can change outfit based on scene narrative:
+        - Player says "take off your dress" -> LLM responds with nude outfit
+        - Luna changes into leather dress during scene -> outfit_update reflects this
+        """
+        companion = game_state.active_companion
+        if not companion or companion == "_solo_":
+            return
+        
+        outfit = game_state.get_outfit(companion)
+        old_desc = outfit.description[:50] if outfit.description else "none"
+        
+        # Case 1: Complete description override (e.g., "nude", "black leather dress with studs")
+        if hasattr(outfit_update, 'description') and outfit_update.description:
+            outfit.description = outfit_update.description
+            outfit.style = "custom"
+            print(f"[TurnOrchestrator] Outfit updated from LLM: {old_desc}... -> {outfit.description[:50]}...")
+        
+        # Case 2: Style change (wardrobe key like "formal", "casual")
+        elif hasattr(outfit_update, 'style') and outfit_update.style:
+            companion_def = self.world.companions.get(companion)
+            if companion_def and companion_def.wardrobe:
+                if outfit_update.style in companion_def.wardrobe:
+                    wardrobe_def = companion_def.wardrobe[outfit_update.style]
+                    from luna.core.models import OutfitState
+                    if isinstance(wardrobe_def, str):
+                        outfit = OutfitState(style=outfit_update.style, description=wardrobe_def)
+                    else:
+                        outfit = OutfitState(
+                            style=outfit_update.style,
+                            description=getattr(wardrobe_def, 'sd_prompt', '') or getattr(wardrobe_def, 'description', outfit_update.style)
+                        )
+                    game_state.set_outfit(outfit, companion)
+                    print(f"[TurnOrchestrator] Outfit style changed: {outfit_update.style}")
+                    return  # outfit already set
+        
+        # Case 3: Component modifications (e.g., remove shoes, change top)
+        if hasattr(outfit_update, 'modify_components') and outfit_update.modify_components:
+            for component, value in outfit_update.modify_components.items():
+                outfit.set_component(component, value)
+            print(f"[TurnOrchestrator] Outfit components modified: {outfit_update.modify_components}")
+        
+        # Save updated outfit
+        game_state.set_outfit(outfit, companion)
     
     def _handle_phase_manager(self) -> Optional[Any]:
         """Handle phase manager update."""
@@ -1535,15 +1610,13 @@ class TurnOrchestrator:
             self.tracer.warning("No media pipeline available!")
             return None
         
-        # V4.5: For remote communication, override visual_en to match NPC's actual location
+        # V4.6: Use LLM's visual_en as-is - NEVER override
+        # The LLM knows best what the scene should look like
         visual_en = llm_response.visual_en
-        if self._in_remote_communication and effective_location and location_desc:
-            # Build context-appropriate visual description
-            remote_visual = f"{game_state.active_companion} in {location_desc}, {outfit.description if outfit else 'casual outfit'}"
-            # Use remote visual if the LLM's visual_en doesn't match the location
-            if location_id and location_id.lower() not in (visual_en or '').lower():
-                print(f"[MediaGen] Overriding visual_en for remote comm: '{visual_en}' -> '{remote_visual}'")
-                visual_en = remote_visual
+        if self._in_remote_communication and effective_location:
+            # Just log the remote location for debugging, but keep LLM's visual
+            print(f"[MediaGen] Remote comm with {game_state.active_companion} at {effective_location}")
+            print(f"[MediaGen] Using LLM visual_en (NOT overridden): {visual_en[:80]}...")
         
         # Generate media
         media_task = asyncio.create_task(
@@ -1683,4 +1756,5 @@ class TurnOrchestrator:
             needs_location_refresh=needs_location_refresh,
             turn_number=game_state.turn_count,
             provider_used=provider_used,
+            sd_prompt=media_result.sd_prompt if media_result else None,
         )

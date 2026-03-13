@@ -65,15 +65,18 @@ class StateMemoryManager:
         self.story_director = story_director
         self.personality_engine = personality_engine
     
-    async def save_all(self) -> None:
+    async def save_all(self, companion_location: str = None) -> None:
         """Save all game state and memory in a single transaction.
         
         This replaces the scattered save operations in engine.py
         with a single coordinated save operation.
+        
+        Args:
+            companion_location: V4.6 - Current location of active companion
         """
         async with self.db.session() as db_session:
-            # 1. Core game state
-            await self.state_manager.save(db_session)
+            # 1. Core game state (with companion location)
+            await self.state_manager.save(db_session, companion_location=companion_location)
             
             # 2. Quest states
             if self.quest_engine:
@@ -148,6 +151,7 @@ class StateMemoryManager:
         max_facts: int = 3,
         min_importance: int = 4,
         use_semantic: bool = True,
+        companion_filter: Optional[str] = None,
     ) -> str:
         """Get relevant memory context for a query.
         
@@ -159,6 +163,7 @@ class StateMemoryManager:
             max_facts: Maximum facts to include (for compatibility)
             min_importance: Minimum importance threshold (for compatibility)
             use_semantic: Whether to use semantic search
+            companion_filter: Filter by companion for memory isolation (V4.6)
             
         Returns:
             Formatted memory context string
@@ -170,6 +175,7 @@ class StateMemoryManager:
             query=query,
             max_facts=max_facts,
             min_importance=min_importance,
+            companion_filter=companion_filter,
         )
     
     def get_recent_history(self, limit: int = 20) -> List[Dict[str, Any]]:
@@ -193,6 +199,7 @@ class StateMemoryManager:
         turn_number: int,
         visual_en: str = "",
         tags_en: Optional[List[str]] = None,
+        companion_name: Optional[str] = None,
     ) -> None:
         """Add a message to short-term memory.
         
@@ -202,6 +209,7 @@ class StateMemoryManager:
             turn_number: Current turn number
             visual_en: Optional visual description
             tags_en: Optional SD tags
+            companion_name: Companion name for memory isolation (V4.6)
         """
         if not self.memory_manager:
             return
@@ -212,6 +220,7 @@ class StateMemoryManager:
             turn_number=turn_number,
             visual_en=visual_en,
             tags_en=tags_en,
+            companion_name=companion_name,
         )
     
     async def add_fact(
