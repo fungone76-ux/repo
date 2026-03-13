@@ -1,720 +1,240 @@
-"""Outfit Modifier System - Deterministic clothing changes based on player input.
+"""Outfit Modifier System V5.0 - Simplified deterministic clothing changes.
 
-This module provides a standalone system for detecting and applying outfit
-modifications based on player input. It works independently from the LLM,
-ensuring that visual changes are deterministic and persistent.
+Detects outfit modifications from player input (Italian patterns) and applies
+them as overlay modifications (OutfitModification) on top of the base outfit.
 
-Usage:
-    In GameEngine.__init__:
-        self.outfit_modifier = OutfitModifierSystem()
-    
-    In GameEngine.process_turn:
-        self.outfit_modifier.process_turn(user_input, game_state)
+Key changes from V4:
+- Modifications stored in outfit.modifications dict (persistent per phase)
+- Description generation delegated to OutfitRenderer
+- Simplified: ~10 modification types instead of 20+
+- reset_modifications() for phase-change integration
+
+Public API (unchanged for TurnOrchestrator compatibility):
+    process_turn(user_input, game_state, companion_def) -> (modified, is_major, desc_it)
+    apply_major_change(game_state, desc_it, llm_manager) -> bool
+    change_random_outfit(game_state, companion_def) -> Optional[str]
+    change_custom_outfit(game_state, desc_it, llm_manager) -> str
+    reset_modifications(game_state) -> None  [NEW]
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
-from enum import Enum
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from luna.core.models import GameState, OutfitState
 
 
-class ModificationType(str, Enum):
-    """Type of outfit modification."""
-    REMOVED = "removed"
-    PARTIAL = "partial"
-    DAMAGED = "damaged"
-    SPECIAL = "special"
-    ADDED = "added"
+# =============================================================================
+# MODIFICATION TYPE PATTERNS (Italian)
+# Each entry maps a modification TYPE to a list of regex triggers.
+# =============================================================================
+
+MOD_TYPE_PATTERNS: Dict[str, List[str]] = {
+    "removal": [
+        r"\b(senza|scalz[ao]|nud[ao]\s+(ai\s+piedi|in\s+alto|dal\s+busto|dai\s+fianchi))\b",
+        r"\b(tolt[oaie]|levat[oaie]|rimoss[oaie]|sfilat[oaie])\b",
+        r"\b(si\s+togli[eè]|toglie?|si\s+sfila?|sfila?|si\s+leva|leva)\b",
+    ],
+    "added": [
+        r"\b(rimess[oaie]|indossat[oaie]|mett[eoa]|calzat[oaie])\b",
+        r"\b(si\s+rimett[eoa]|rimett[eoa]|indoss[ao]|riprende|si\s+rivest)\b",
+    ],
+    "wet": [
+        r"\b(bagnato|bagnata|bagnati|bagnate|inzuppat[oaie]|fradici[ao])\b",
+    ],
+    "partial_unbuttoned": [
+        r"\b(sbottonat[oaie]|slacciat[oaie]|bottoni\s+aperti)\b",
+        r"\b(si\s+sbotton[a]|sbotton[a]|apr[ea]\s+(la\s+)?camicia)\b",
+    ],
+    "lifted": [
+        r"\b(sollevat[oaie]|alzat[oaie]|upskirt|sotto\s+la\s+gonna)\b",
+        r"\b(si\s+solleva|solleva|si\s+alza|alza)\b",
+    ],
+    "lowered": [
+        r"\b(abbassati?|abbassate?|calati?|calate?|giù\s+(i|le|il|la))\b",
+        r"\b(si\s+abbassa|abbassa|si\s+cala|cala)\b",
+    ],
+    "torn": [
+        r"\b(strappat[oaie]|rott[oaie])\b",
+    ],
+    "pulled_down": [
+        r"\b(calate|attorno\s+(alle\s+)?caviglie|arrotolat[oa])\b",
+    ],
+    "see_through": [
+        r"\b(trasparente|trasparenti|see[\s\-]?through|visibile\s+sotto)\b",
+    ],
+}
+
+# Which components each modification type can apply to
+MOD_APPLIES_TO: Dict[str, List[str]] = {
+    "removal":             ["shoes", "top", "bra", "outerwear", "bottom", "panties", "pantyhose"],
+    "added":               ["shoes", "top", "bra", "outerwear", "bottom", "panties", "pantyhose"],
+    "wet":                 ["top", "bottom", "dress", "shoes"],
+    "partial_unbuttoned":  ["top"],
+    "lifted":              ["bottom", "dress"],
+    "lowered":             ["bottom", "panties"],
+    "torn":                ["pantyhose"],
+    "pulled_down":         ["pantyhose"],
+    "see_through":         ["bra", "top"],
+}
+
+# Italian noun patterns per component
+COMPONENT_PATTERNS: Dict[str, List[str]] = {
+    "shoes":     [r"\b(scarpe?|tacchi|calzini|sandali|stivali|mocassini)\b"],
+    "top":       [r"\b(camicia|maglia|top|blusa|maglietta|canottiera|canotta|t-shirt)\b"],
+    "bra":       [r"\b(reggiseno|bra|reggipetto)\b"],
+    "outerwear": [r"\b(giacca|blazer|cardigan|cappotto|giubbotto)\b"],
+    "bottom":    [r"\b(gonna|pantaloni|shorts|pantaloncini|jeans|pantalone)\b"],
+    "panties":   [r"\b(mutande|perizoma|slip|intimo)\b"],
+    "pantyhose": [r"\b(calze|collant|autoreggenti)\b"],
+    "dress":     [r"\b(vestito|abito)\b"],
+}
+
+# Fast-path direct phrases - checked first for common expressions
+DIRECT_PHRASES: List[Dict] = [
+    {"pattern": r"\b(scalz[ao]|piedi\s+nudi|senza\s+scarpe?|nud[ao]\s+ai\s+piedi)\b",
+     "component": "shoes", "state": "removed"},
+    {"pattern": r"\b(rimett[eoa]\s+(le\s+)?scarpe?|scarpe?\s+(rimesse?|ai\s+piedi))\b",
+     "component": "shoes", "state": "added"},
+    {"pattern": r"\b(upskirt|sotto\s+la\s+gonna|gonna\s+sollevata|gonna\s+alzata)\b",
+     "component": "bottom", "state": "lifted"},
+    {"pattern": r"\b(vestito\s+bagnato|abito\s+bagnato|bagnata\s+fradicia)\b",
+     "component": "dress", "state": "wet"},
+    {"pattern": r"\b(calze\s+strappate|collant\s+strappato)\b",
+     "component": "pantyhose", "state": "torn"},
+    {"pattern": r"\b(calze\s+calate|collant\s+calato|calze\s+alle\s+caviglie)\b",
+     "component": "pantyhose", "state": "pulled_down"},
+    {"pattern": r"\b(camicia\s+sbottonata|camicia\s+aperta|scollo\s+aperto)\b",
+     "component": "top", "state": "partial_unbuttoned"},
+    {"pattern": r"\b(piedi\s+scalzi|feet\s+bare|barefoot)\b",
+     "component": "shoes", "state": "removed"},
+]
+
+# Major-change patterns (complete outfit replacement)
+MAJOR_CHANGE_PATTERNS: List[str] = [
+    r"\b(si\s+cambia\s+(il\s+)?(vestito|abito|outfit))\b",
+    r"\b(mette\s+(un\s+)?(altro|nuovo|diverso)\s+(vestito|abito|outfit|completo))\b",
+    r"\b(vestito\s+da\s+sera|abito\s+da\s+sera|evening\s+gown)\b",
+    r"\b(pigiama|pajamas|sleepwear)\b",
+    r"\b(bikini|costume\s+da\s+bagno|swimsuit)\b",
+    r"\b(lingerie|intimo\s+sexy|biancheria\s+intima)\b",
+    r"\b(kimono|accappatoio|vestaglia)\b",
+    r"\b(uniforme|divisa)\b",
+    r"\b(indossa\s+(un|una)\s+(?!poco|solo|solo\s+un)(\w+\s+){0,3}(vestito|abito|outfit|completo))\b",
+]
 
 
-@dataclass
-class OutfitChange:
-    """Single outfit change detected."""
-    component: str
-    new_value: str
-    mod_type: ModificationType
-    description: str
-    confidence: float = 1.0
-
+# =============================================================================
+# OutfitModifierSystem
+# =============================================================================
 
 class OutfitModifierSystem:
-    """Standalone outfit modification system.
-    
+    """Standalone outfit modification system V5.0.
+
     Parses player input for clothing modifications and applies them
-    to the game state. Designed to be called once per turn.
+    as OutfitModification overlay entries in game_state.outfit.modifications.
+    Call once per turn via process_turn().
     """
-    
-    # ===================================================================
-    # PATTERN DEFINITIONS - Italian
-    # ===================================================================
-    
-    PATTERNS: Dict[str, Dict[str, List[str]]] = {
-        # SHOES - Espansi con molti più pattern
-        "shoes": {
-            "remove": [
-                # Pattern base
-                r"\b(senza\s+scarp[ae]|scalz[ao]|piedi\s+nudi|nud[ao]\s+ai\s+piedi)\b",
-                r"\b(tol[gt]a?\s+(le\s+)?scarp[ae]|levat[ae]?\s+(le\s+)?scarp[ae]|sfilat[ae]?\s+(le\s+)?scarp[ae])\b",
-                r"\b(tol[gt]a?\s+(una\s+)?scarpa|levat[ae]?\s+(una\s+)?scarpa)\b",
-                r"\b(rimoss[ae]?\s+(le\s+)?scarpe|togli\s+(le\s+)?scarpe)\b",
-                r"\b(scarp[ae]\s+(tolte?|levate?|rimosse?)|hai\s+tolto\s+(le\s+|una\s+)?scarp[ae])\b",
-                r"\b(si\s+[eè]\s+tolta\s+(una\s+|la\s+)?scarpa)\b",
-                # Pattern narrativi (LLM response)
-                r"\b(si\s+sfil[ao]\s+(le\s+)?scarp[ae]|sfil[ao]\s+(le\s+)?scarp[ae])\b",
-                r"\b(si\s+leva\s+(le\s+)?scarp[ae]|lev[aà]\s+(le\s+)?scarp[ae])\b",
-                r"\b(scarp[ae]\s+(sfilate|levarse|torsesi)|lasci[ao]\s+(le\s+)?scarp[ae])\b",
-                r"\b(piedi\s+nud[io]|resta\s+scalz[ao]|rimane\s+scalz[ao])\b",
-                r"\b(si\s+liber[ao]\s+(dei\s+piedi|dai\s+piedi)|liber[ao]\s+i\s+piedi)\b",
-                r"\b(calz[ae]?\s+(tolte?|sfilate?)|calzini\s+(tolti?|sfilati?))\b",
-                r"\b(tacchi\s+(tolti?|sfilati?)|si\s+togli[eè]\s+i\s+tacchi)\b",
-            ],
-            "add": [
-                # Pattern base
-                r"\b(rimett[aoe]?\s+(le\s+)?scarpe|indoss[aoe]?\s+(le\s+)?scarpe|mett[aoe]?\s+(le\s+)?scarpe)\b",
-                r"\b(rimett[aoe]?\s+(una\s+)?scarpa|indoss[aoe]?\s+(una\s+)?scarpa)\b",
-                r"\b(scarpe\s+(ai\s+piedi|rimesse|indossate))\b",
-                # Pattern narrativi (LLM response)
-                r"\b(si\s+rimett[aoe]?\s+(le\s+)?scarp[ae]|rimett[aoe]?\s+(le\s+)?scarp[ae])\b",
-                r"\b(scarp[ae]\s+(rimesse|rimettersi|rimesse))\b",
-                r"\b(indoss[ao]\s+di\s+nuovo\s+(le\s+)?scarp[ae])\b",
-                r"\b(riprende\s+(le\s+)?scarp[ae]|prende\s+(le\s+)?scarp[ae])\b",
-                r"\b(si\s+veste\s+(le\s+)?scarp[ae]|calz[ao]\s+(le\s+)?scarp[ae])\b",
-                r"\b(mette\s+(i\s+)?tacchi|indossa\s+(i\s+)?tacchi)\b",
-            ],
-            "values": {"remove": "none", "add": "elegant high heels"}
-        },
-        
-        # OUTERWEAR
-        "outerwear": {
-            "remove": [
-                r"\b(senza\s+(giacca|blazer|cardigan|coprispalle|paletot))\b",
-                r"\b(tol[gt]a?\s+(la\s+)?(giacca|blazer|cardigan)|levat[ae]?\s+(la\s+)?(giacca|blazer))\b",
-                r"\b(rimoss[ae]?\s+(la\s+)?(giacca|blazer)|togli\s+(la\s+)?(giacca|blazer))\b",
-                r"\b(giacca\s+(tolta|levata|aperta|rimossa)|giacca\s+su\s+spalliera)\b",
-                r"\b(svestit[ao]\s+(della\s+)?(giacca|blazer))\b",
-            ],
-            "add": [
-                r"\b(rimett[aoe]?\s+(la\s+)?(giacca|blazer)|indoss[aoe]?\s+(la\s+)?(giacca|blazer))\b",
-                r"\b(mett[aoe]?\s+(la\s+)?(giacca|blazer)|chius[ao]\s+(la\s+)?(giacca|blazer))\b",
-            ],
-            "values": {"remove": "none", "add": "blue blazer"}
-        },
-        
-        # TOP / SHIRT - Espansi
-        "top": {
-            "unbutton": [
-                r"\b(camicia\s+sbottonata|camici[ao]\s+apert[ao]|scollatura\s+aperta)\b",
-                r"\b(sbottonat[ae]?\s+(la\s+)?camicia|apert[ae]?\s+(la\s+)?camicia)\b",
-                r"\b(bottoni\s+(aperti|slacciati|staccati)|camicia\s+slacciata)\b",
-                r"\b(downblouse|scollatura\s+profonda|scollo\s+a\s+V\s+aperto)\b",
-                r"\b(camicia\s+che\s+scivola|spalle\s+scoperte|scollatura\s+laterale)\b",
-                r"\b(sideboob\s+della\s+camicia|seno\s+laterale\s+visibile)\b",
-                # Pattern narrativi LLM
-                r"\b(si\s+sbotton[a]\s+(la\s+)?camicia|sbotton[a]\s+(la\s+)?camicia)\b",
-                r"\b(apr[a]\s+(la\s+)?camicia|apr[a]\s+i\s+bottoni)\b",
-                r"\b(camicia\s+(aperta|sbottonata|slacciata))\b",
-                r"\b(bottoni\s+della\s+camicia\s+aperti)\b",
-            ],
-            "remove": [
-                r"\b(senza\s+(camicia|maglia|top|blusa)|camicia\s+tolta)\b",
-                r"\b(tol[gt]a?\s+(la\s+)?(camicia|maglia|top)|levat[ae]?\s+(la\s+)?(camicia|maglia))\b",
-                r"\b(nud[ao]\s+(dal\s+busto\s+in\s+su|in\s+alto)|torace\s+nudo)\b",
-                # Pattern narrativi LLM
-                r"\b(si\s+togli[eè]\s+(la\s+)?camicia|toglie\s+(la\s+)?camicia)\b",
-                r"\b(si\s+togli[eè]\s+(il\s+)?top|toglie\s+(il\s+)?top)\b",
-                r"\b(si\s+togli[eè]\s+(la\s+)?maglia|toglie\s+(la\s+)?maglia)\b",
-                r"\b(camicia\s+(tolta|sfilata|levata|rimossa))\b",
-                r"\b(top\s+(tolto|sfilato|levato|rimosso))\b",
-                r"\b(maglia\s+(tolta|sfilata|levata|rimossa))\b",
-                r"\b(senza\s+(la\s+)?camicia|rimane\s+senza\s+camicia)\b",
-                r"\b(torace\s+nudo|seno\s+nudo|seni\s+nudi)\b",
-                r"\b(si\s+spogli[a]\s+(del\s+)?top|spogliarsi\s+(del\s+)?top)\b",
-            ],
-            "add": [
-                r"\b(rimett[aoe]?\s+(la\s+)?(camicia|maglia|top)|indoss[aoe]?\s+(la\s+)?(camicia|maglia))\b",
-                r"\b(camicia\s+(chiusa|bottonata|indossata))\b",
-                # Pattern narrativi LLM
-                r"\b(si\s+rimett[aoe]?\s+(la\s+)?camicia|rimett[aoe]?\s+(la\s+)?camicia)\b",
-                r"\b(indoss[ao]\s+di\s+nuovo\s+(la\s+)?camicia)\b",
-                r"\b(riprende\s+(la\s+)?camicia|prende\s+(la\s+)?camicia)\b",
-                r"\b(mette\s+(la\s+)?camicia|si\s+veste\s+(la\s+)?camicia)\b",
-                r"\b(chiud[a]\s+(la\s+)?camicia|botton[a]\s+(la\s+)?camicia)\b",
-                r"\b(camicia\s+rimesa|camicia\s+indossata)\b",
-            ],
-            "values": {
-                "unbutton": "unbuttoned white shirt, cleavage visible",
-                "remove": "none",
-                "add": "white button-up blouse"
-            }
-        },
-        
-        # BRA
-        "bra": {
-            "remove": [
-                r"\b(senza\s+(reggiseno|bra|reggipetto)|reggiseno\s+tolto)\b",
-                r"\b(tol[gt][ao]?\s+(il\s+)?(reggiseno|bra)|lev[oa]\s+(il\s+)?(reggiseno|bra))\b",
-                r"\b(nud[ao]\s+sotto|sotto\s+senza\s+niente|seno\s+libero)\b",
-                r"\b(ventaglio|sideboob\s+visible|seno\s+laterale\s+visibile)\b",
-                r"\b(tette\s+libere|seno\s+scoperto|sotto\s+nuda)\b",
-            ],
-            "see_through": [
-                r"\b(reggiseno\s+trasparente|camicia\s+bagnata\s+trasparente|vedo\s+(il\s+)?reggiseno)\b",
-                r"\b(nipples?\s+visible|capezzoli\s+visibili|turgidi\s+sotto\s+camicia)\b",
-                r"\b(see[\s\-]?through|trasparente|bagnata\s+trasparente)\b",
-            ],
-            "add": [
-                r"\b(rimett[aoe]?\s+(il\s+)?(reggiseno|bra)|indoss[aoe]?\s+(il\s+)?(reggiseno|bra))\b",
-            ],
-            "values": {
-                "remove": "none",
-                "see_through": "lace bra visible through shirt",
-                "add": "white lace bra"
-            }
-        },
-        
-        # PANTIES
-        "panties": {
-            "remove": [
-                r"\b(senza\s+(mutande|perizoma|slip|intimo)|nud[ao]\s+sotto)\b",
-                r"\b(tol[gt][ao]?\s+(le\s+)?(mutande|perizoma)|lev[oa]\s+(le\s+)?(mutande|perizoma))\b",
-                r"\b(mutande\s+(tolte|calate|giù)|perizoma\s+rimosso)\b",
-                r"\b(giù\s+(le\s+)?mutande|abbass[ao](le\s+)?mutande)\b",
-            ],
-            "add": [
-                r"\b(rimett[aoe]?\s+(le\s+)?(mutande|perizoma)|indoss[aoe]?\s+(le\s+)?(mutande|perizoma))\b",
-            ],
-            "values": {"remove": "none", "add": "white lace panties"}
-        },
-        
-        # PANTYHOSE
-        "pantyhose": {
-            "remove": [
-                r"\b(senza\s+(calze|collant|autoreggenti)|gambe\s+nude)\b",
-                r"\b(tol[gt][ao]?\s+(le\s+)?(calze|collant)|lev[oa]\s+(le\s+)?(calze|collant))\b",
-                r"\b(calze\s+(tolte|levate)|collant\s+rimosso)\b",
-            ],
-            "torn": [
-                r"\b(calze\s+strappate|collant\s+strappato|strapp[aoi]\s+(nelle\s+)?calze|strappo\s+(le\s+)?calze)\b",
-                r"\b(strapp[aoi]\s+sulle\s+gambe|calze\s+rotte|laddered\s+pantyhose)\b",
-                r"\b(strappo\s+(sulla\s+coscia|in\s+alto)|velo\s+strappato)\b",
-            ],
-            "pulled_down": [
-                r"\b(calze\s+calate|collant\s+calato|calze\s+abbassate|autoreggenti\s+calate)\b",
-                r"\b(calze\s+attorno\s+(alle\s+caviglie|ai\s+piedi)|collant\s+arrotolato)\b",
-            ],
-            "add": [
-                r"\b(rimett[aoe]?\s+(le\s+)?(calze|collant)|indoss[aoe]?\s+(le\s+)?(calze|collant))\b",
-            ],
-            "values": {
-                "remove": "none",
-                "torn": "torn black pantyhose, runs on thighs",
-                "pulled_down": "pantyhose pulled down around ankles",
-                "add": "sheer black pantyhose"
-            }
-        },
-        
-        # BOTTOM - Espansi con molti più pattern
-        "bottom": {
-            "lift": [
-                r"\b(gonna\s+sollevata|gonna\s+corta|sotto\s+la\s+gonna|upskirt)\b",
-                r"\b(sollev[ao]\s+(la\s+)?gonna|alz[oa]\s+(la\s+)?gonna|gonna\s+rintracciata)\b",
-                r"\b(gonna\s+da\s+sotto|vista\s+da\s+sotto\s+la\s+gonna|alzo\s+(la\s+)?gonna)\b",
-                # Pattern narrativi LLM
-                r"\b(si\s+solleva\s+(la\s+)?gonna|solleva\s+(la\s+)?gonna)\b",
-                r"\b(gonna\s+(sollevarsi|alzarsi|accorciarsi))\b",
-                r"\b(alz[ao]\s+(la\s+)?gonna\s+da\s+sotto)\b",
-            ],
-            "lower": [
-                r"\b(pantaloni\s+abbassati|pantaloni\s+giù|jeans\s+abbassati)\b",
-                r"\b(abbass[ao]\s+(i\s+)?pantaloni|cal[oa]\s+(i\s+)?pantaloni)\b",
-                r"\b(zip\s+(aperta|giù)|cerniera\s+aperta|pantaloni\s+aperti)\b",
-                # Pattern narrativi LLM
-                r"\b(si\s+abbassa\s+(i\s+)?pantaloni|abbassa\s+(i\s+)?pantaloni)\b",
-            ],
-            "remove": [
-                r"\b(senza\s+(gonna|pantaloni|pantaloncini)|gonna\s+tolta)\b",
-                r"\b(tol[gt][ao]?\s+(la\s+)?(gonna|skirt)|lev[oa]\s+(la\s+)?(gonna|skirt))\b",
-                r"\b(nud[ao]\s+(dai\s+fianchi\s+in\s+giù|in\s+basso))\b",
-                # Pattern narrativi LLM - gonne
-                r"\b(si\s+togli[eè]\s+(la\s+)?gonna|toglie\s+(la\s+)?gonna)\b",
-                r"\b(si\s+sfil[a]\s+(la\s+)?gonna|sfil[a]\s+(la\s+)?gonna)\b",
-                r"\b(si\s+leva\s+(la\s+)?gonna|leva\s+(la\s+)?gonna)\b",
-                r"\b(gonna\s+(sfilata|tolta|levata|rimossa)|lasci[a]\s+(la\s+)?gonna)\b",
-                r"\b(senza\s+(la\s+)?gonna|rimane\s+senza\s+gonna)\b",
-                r"\b(si\s+libera\s+(della\s+)?gonna)\b",
-                r"\b(gonna\s+(scivol[a]\s+giù|cade|scende))\b",
-                # Pattern pantaloni
-                r"\b(si\s+togli[eè]\s+(i\s+)?pantaloni|toglie\s+(i\s+)?pantaloni)\b",
-                r"\b(si\s+sfil[a]\s+(i\s+)?pantaloni|sfil[a]\s+(i\s+)?pantaloni)\b",
-                r"\b(pantaloni\s+(tolti|sfilati|levati|rimossi))\b",
-                r"\b(senza\s+(i\s+)?pantaloni|rimane\s+senza\s+pantaloni)\b",
-            ],
-            "add": [
-                r"\b(rimett[aoe]?\s+(la\s+)?(gonna|skirt)|indoss[aoe]?\s+(la\s+)?(gonna|skirt))\b",
-                r"\b(gonna\s+(rimessa|indossata|calata))\b",
-                # Pattern narrativi LLM
-                r"\b(si\s+rimett[aoe]?\s+(la\s+)?gonna|rimett[aoe]?\s+(la\s+)?gonna)\b",
-                r"\b(si\s+rimett[aoe]?\s+(i\s+)?pantaloni|rimett[aoe]?\s+(i\s+)?pantaloni)\b",
-                r"\b(indoss[ao]\s+di\s+nuovo\s+(la\s+)?gonna)\b",
-                r"\b(riprende\s+(la\s+)?gonna|prende\s+(la\s+)?gonna)\b",
-                r"\b(mette\s+(la\s+)?gonna|si\s+veste\s+(la\s+)?gonna)\b",
-                r"\b(calz[a]\s+(la\s+)?gonna|si\s+cal[a]\s+(la\s+)?gonna)\b",
-                r"\b(pantaloni\s+(rimesse|rimessi|indossati))\b",
-            ],
-            "values": {
-                "lift": "pleated skirt lifted up, exposed",
-                "lower": "charcoal grey pencil skirt lowered",
-                "remove": "none",
-                "add": "charcoal grey pencil skirt"
-            }
-        },
-        
-        # TIE
-        "tie": {
-            "loosen": [
-                r"\b(cravatta\s+allentata|cravatta\s+slacciata|cravatta\s+storta)\b",
-                r"\b(allent[ao]\s+(la\s+)?cravatta|slacci[ao]\s+(la\s+)?cravatta)\b",
-                r"\b(cravatta\s+aperta|nodo\s+allentato)\b",
-            ],
-            "remove": [
-                r"\b(senza\s+cravatta|cravatta\s+tolta|levata\s+(la\s+)?cravatta)\b",
-                r"\b(tol[gt][ao]?\s+(la\s+)?cravatta|togli\s+(la\s+)?cravatta)\b",
-            ],
-            "add": [
-                r"\b(rimett[aoe]?\s+(la\s+)?cravatta|sistema\s+(la\s+)?cravatta)\b",
-                r"\b(cravatta\s+(stretta|a\s+posto|indossata))\b",
-            ],
-            "values": {
-                "loosen": "loose red ribbon tie, slightly undone",
-                "remove": "none",
-                "add": "red ribbon tie, neatly tied"
-            }
-        },
-        
-        # DRESS
-        "dress": {
-            "slip": [
-                r"\b(vestito\s+che\s+scivola|spalline\s+cadute|vestito\s+abbassato)\b",
-                r"\b(scollatura\s+caduta|vestito\s+sfuggente|abito\s+scollato\s+di\s+lato)\b",
-                r"\b(sideboob\s+da\s+vestito|seno\s+laterale\s+fuori)\b",
-            ],
-            "lift": [
-                r"\b(vestito\s+sollevato|gonna\s+(del\s+)?vestito\s+su|sotto\s+il\s+vestito)\b",
-                r"\b(vestito\s+arrotolato|orlo\s+sollevato|sollev[ao]\s+(il\s+)?vestito)\b",
-            ],
-            "open": [
-                r"\b(vestito\s+aperto|cerniera\s+(aperta|giù)|bottoni\s+aperti)\b",
-                r"\b(abito\s+aperto\s+sul\s+davanti|vestito\s+spalancato|apr[io]\s+(il\s+)?vestito)\b",
-            ],
-            "wet": [
-                r"\b(vestito\s+bagnato|abito\s+inzuppato|bagnata\s+fradicia)\b",
-                r"\b(trasparente\s+per\s+il\s+bagnato|vedo\s+tutto\s+bagnato)\b",
-            ],
-            "values": {
-                "slip": "dress slipping off shoulder, sideboob visible",
-                "lift": "dress lifted up, gathered at waist",
-                "open": "dress unzipped, open front",
-                "wet": "wet dress, see-through fabric clinging"
-            }
-        },
-        
-        # ACCESSORIES
-        "accessories": {
-            "remove_glasses": [
-                r"\b(senza\s+occhiali|occhiali\s+(tolti|levati)|rimoss[oi]\s+occhiali)\b",
-                r"\b(tol[gt][io]?\s+(gli\s+)?occhiali|lev[oa]\s+(gli\s+)?occhiali)\b",
-            ],
-            "add_glasses": [
-                r"\b(occhiali\s+(addosso|indossati|rimessi)|rimett[aoe]?\s+(gli\s+)?occhiali)\b",
-            ],
-            "remove_jewelry": [
-                r"\b(senza\s+(gioielli|collana|orecchini)|collana\s+tolta)\b",
-                r"\b(tol[gt]a?\s+(la\s+)?collana|levat[ae]?\s+(la\s+)?collana)\b",
-            ],
-            "values": {
-                "remove_glasses": "no glasses",
-                "add_glasses": "wearing glasses",
-                "remove_jewelry": "no jewelry"
-            }
-        },
-        
-        # SPECIAL
-        "special": {
-            "downblouse": [
-                r"\b(downblouse|scollatura\s+da\s+sopra|vedo\s+da\s+sopra|vista\s+dall'alto\s+scollatura)\b",
-                r"\b(penso\s+nella\s+scollatura|sguardo\s+nella\s+scollatura|cade\s+lo\s+sguardo)\b",
-                r"\b(scollatura\s+profonda\s+vista\s+dall'alto|tette\s+viste\s+dall'alto)\b",
-            ],
-            "cameltoe": [
-                r"\b(cameltoe|taglio\s+visibile|intimo\s+segnato|pantaloni\s+attillati\s+intimo)\b",
-                r"\b(camel\s+toe|silhouette\s+intimo|mutande\s+segnate)\b",
-            ],
-            "pokies": [
-                r"\b(pokies?|capezzoli\s+turgidi\s+visibili|tette\s+punzecchiate|seno\s+in\s+evidenza)\b",
-                r"\b(nipples?\s+hard|turgidi\s+sotto\s+(camicia|vestito)|bust\s+pointing)\b",
-            ],
-            "values": {
-                "downblouse": "downblouse view, cleavage from above",
-                "cameltoe": "tight skirt, cameltoe visible",
-                "pokies": "nipples hard and visible through fabric"
-            }
-        },
-    }
-    
-    # MAJOR CHANGE patterns - trigger complete outfit replacement
-    MAJOR_CHANGE_PATTERNS: Dict[str, List[str]] = {
-        "change_outfit": [
-            r"\b(si\s+cambia|cambia\s+(vestito|abito|outfit)|mette\s+(un\s+)?(altro|nuovo))\b",
-            r"\b(vestito\s+da\s+sera|abito\s+da\s+sera|evening\s+gown|dress\s+da\s+sera)\b",
-            r"\b(abito\s+rosso|vestito\s+rosso|red\s+dress)\b",
-            r"\b(pigiama|pajamas|sleepwear|notte)\b",
-            r"\b(bikini|costume\s+da\s+bagno|swimsuit)\b",
-            r"\b(lingerie|intimo|biancheria\s+intima)\b",
-            r"\b(kimono|accappatoio|vestaglia|robe)\b",
-            r"\b(uniforme|divisa|militare|polizia|infermiera)\b",
-        ],
-        "keywords": [
-            "abito", "vestito", "dress", "gown", "sera", "evening", "formal",
-            "pigiama", "sleepwear", "bikini", "swimsuit", "costume", "bagno",
-            "lingerie", "intimo", "kimono", "vestaglia", "accappatoio",
-            "uniforme", "divisa", "sports", "sportivo", "casual",
-        ]
-    }
-    
-    # Human-readable descriptions for prompts
-    COMPONENT_DESCRIPTIONS: Dict[str, Dict[str, str]] = {
-        "shoes": {
-            "none": "barefoot, bare feet visible",
-            "barefoot": "barefoot, bare feet visible",
-            "elegant high heels": "wearing elegant high heels",
-        },
-        "outerwear": {
-            "none": "without jacket, sleeves rolled up",
-            "blue blazer": "wearing blue blazer",
-        },
-        "top": {
-            "none": "topless, bare chest",
-            "unbuttoned white shirt, cleavage visible": "unbuttoned white shirt, cleavage spilling out",
-            "white button-up blouse": "white button-up blouse, fully buttoned",
-        },
-        "bra": {
-            "none": "no bra, breasts free",
-            "lace bra visible through shirt": "white lace bra visible through wet shirt",
-            "white lace bra": "wearing white lace bra",
-        },
-        "panties": {
-            "none": "no panties, completely naked below",
-            "white lace panties": "wearing white lace panties",
-        },
-        "pantyhose": {
-            "none": "bare legs, no stockings",
-            "torn black pantyhose, runs on thighs": "torn black pantyhose with runs on thighs",
-            "pantyhose pulled down around ankles": "black pantyhose pulled down around ankles",
-            "sheer black pantyhose": "sheer black pantyhose on legs",
-        },
-        "bottom": {
-            "none": "bottomless, no skirt or pants",
-            "pleated skirt lifted up, exposed": "pleated skirt lifted up high, exposing thighs",
-            "charcoal grey pencil skirt": "charcoal grey pencil skirt, knee length",
-        },
-        "tie": {
-            "none": "no tie",
-            "loose red ribbon tie, slightly undone": "red ribbon tie loosened",
-            "red ribbon tie, neatly tied": "red ribbon tie neatly tied at neck",
-        },
-    }
-    
+
     def __init__(self) -> None:
-        """Initialize outfit modifier system."""
-        self._compiled: Dict[str, Dict[str, List[re.Pattern]]] = {}
+        self._type_compiled: Dict[str, List[re.Pattern]] = {}
+        self._comp_compiled: Dict[str, List[re.Pattern]] = {}
+        self._direct_compiled: List[Dict] = []
+        self._major_compiled: List[re.Pattern] = []
         self._compile_patterns()
-    
+
     def _compile_patterns(self) -> None:
-        """Compile regex patterns for performance."""
-        for component, actions in self.PATTERNS.items():
-            self._compiled[component] = {}
-            for action, patterns in actions.items():
-                if action != "values":
-                    self._compiled[component][action] = [
-                        re.compile(p, re.IGNORECASE) for p in patterns
-                    ]
-    
-    def process_turn(self, user_input: str, game_state: GameState, companion_def=None) -> Tuple[bool, bool, str]:
+        for mod_type, patterns in MOD_TYPE_PATTERNS.items():
+            self._type_compiled[mod_type] = [
+                re.compile(p, re.IGNORECASE) for p in patterns
+            ]
+        for component, patterns in COMPONENT_PATTERNS.items():
+            self._comp_compiled[component] = [
+                re.compile(p, re.IGNORECASE) for p in patterns
+            ]
+        for entry in DIRECT_PHRASES:
+            self._direct_compiled.append({
+                "pattern": re.compile(entry["pattern"], re.IGNORECASE),
+                "component": entry["component"],
+                "state": entry["state"],
+            })
+        self._major_compiled = [
+            re.compile(p, re.IGNORECASE) for p in MAJOR_CHANGE_PATTERNS
+        ]
+
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+
+    def process_turn(
+        self,
+        user_input: str,
+        game_state: "GameState",
+        companion_def=None,
+    ) -> Tuple[bool, bool, str]:
         """Process a turn for outfit modifications.
-        
-        This is the main entry point. Call this once per turn.
-        
+
         Args:
             user_input: Player's input text
-            game_state: Current game state (will be modified)
+            game_state: Current game state (will be modified in-place)
             companion_def: Optional companion definition for wardrobe lookup
-            
+
         Returns:
-            Tuple of (modified, is_major_change, outfit_description_it)
-            - modified: True if outfit was modified
-            - is_major_change: True if it's a complete outfit change (needs async handling)
-            - outfit_description_it: For major changes, the Italian description to translate
+            (modified, is_major_change, outfit_description_it)
+            - modified: True if any overlay modification was detected
+            - is_major_change: True if a complete outfit replacement was requested
+            - outfit_description_it: Italian description for major-change async handling
         """
-        # First check for major change (complete outfit replacement)
-        is_major, outfit_desc_it = self._is_major_change(user_input)
-        
+        # Check for complete outfit replacement first
+        is_major, desc_it = self._is_major_change(user_input)
         if is_major:
-            # Major changes need async translation - return info for engine to handle
-            return False, True, outfit_desc_it
-        
-        # Regular component modifications
-        changes = self._parse_input(user_input)
-        
-        if not changes:
+            return False, True, desc_it
+
+        # Detect overlay modifications
+        detected = self._detect_modifications(user_input)
+        if not detected:
             return False, False, ""
-        
-        # Get current outfit
+
         outfit = game_state.get_outfit()
-        old_desc = outfit.description
-        
-        # Apply changes (with companion_def for wardrobe lookup)
-        self._apply_changes(outfit, changes, companion_def)
-        
-        # Update game state
+        self._apply_modifications(outfit, detected, game_state.turn_count, companion_def)
         game_state.set_outfit(outfit)
-        
-        # Log
-        change_str = ", ".join([c.component for c in changes])
-        print(f"[OutfitModifier] Modified: {change_str}")
-        print(f"[OutfitModifier] {old_desc[:40]}... -> {outfit.description[:40]}...")
-        
+
+        changed = ", ".join(f"{c}:{s}" for c, s in detected)
+        print(f"[OutfitModifier] Modifications applied: {changed}")
         return True, False, ""
-    
-    def _parse_input(self, user_input: str) -> List[OutfitChange]:
-        """Parse user input for outfit modifications."""
-        changes: List[OutfitChange] = []
-        detected: Set[str] = set()
-        
-        text_lower = user_input.lower()
-        
-        for component, actions in self._compiled.items():
-            if component in detected:
-                continue
-            
-            for action_type, patterns in actions.items():
-                for pattern in patterns:
-                    if pattern.search(text_lower):
-                        value = self.PATTERNS[component]["values"].get(action_type)
-                        if value:
-                            mod_type = self._get_mod_type(action_type)
-                            changes.append(OutfitChange(
-                                component=component,
-                                new_value=value,
-                                mod_type=mod_type,
-                                description=f"{component}: {action_type}",
-                            ))
-                            detected.add(component)
-                            break
-                if component in detected:
-                    break
-        
-        return changes
-    
-    def _get_mod_type(self, action_type: str) -> ModificationType:
-        """Map action to modification type."""
-        mapping = {
-            "remove": ModificationType.REMOVED,
-            "unbutton": ModificationType.PARTIAL,
-            "loosen": ModificationType.PARTIAL,
-            "lift": ModificationType.PARTIAL,
-            "lower": ModificationType.PARTIAL,
-            "slip": ModificationType.PARTIAL,
-            "open": ModificationType.PARTIAL,
-            "torn": ModificationType.DAMAGED,
-            "pulled_down": ModificationType.PARTIAL,
-            "wet": ModificationType.DAMAGED,
-            "see_through": ModificationType.SPECIAL,
-            "downblouse": ModificationType.SPECIAL,
-            "cameltoe": ModificationType.SPECIAL,
-            "pokies": ModificationType.SPECIAL,
-            "add": ModificationType.ADDED,
-            "add_glasses": ModificationType.ADDED,
-        }
-        return mapping.get(action_type, ModificationType.PARTIAL)
-    
-    def _apply_changes(self, outfit, changes: List[OutfitChange], companion_def=None) -> None:
-        """Apply changes to outfit state."""
-        from luna.core.models import OutfitComponent
-        
-        for change in changes:
-            # Update component
-            outfit.set_component(change.component, change.new_value)
-            
-            # Mark special states
-            if change.mod_type == ModificationType.SPECIAL:
-                outfit.is_special = True
-                current_special = outfit.components.get("special", "")
-                new_special = change.new_value
-                if current_special:
-                    new_special = f"{current_special}, {new_special}"
-                outfit.set_component("special", new_special)
-        
-        # Rebuild description (with companion_def for wardrobe lookup)
-        outfit.description = self._build_description(outfit, companion_def)
-    
-    def _build_description(self, outfit, companion_def=None) -> str:
-        """Build full outfit description.
-        
-        If we only have partial components (e.g., just shoes modified), 
-        append changes to the wardrobe description instead of replacing it completely.
+
+    def reset_modifications(self, game_state: "GameState") -> None:
+        """Clear all overlay modifications (call on phase change).
+
+        Args:
+            game_state: Current game state
         """
-        # Helper to get wardrobe description
-        # Priority: sd_prompt (detailed for SD) > description (human-readable)
-        def get_wardrobe_description():
-            if companion_def and companion_def.wardrobe and outfit.style in companion_def.wardrobe:
-                wardrobe_def = companion_def.wardrobe[outfit.style]
-                if isinstance(wardrobe_def, str):
-                    return wardrobe_def
-                else:
-                    # Use sd_prompt first (more detailed for image generation), fallback to description
-                    return getattr(wardrobe_def, 'sd_prompt', '') or getattr(wardrobe_def, 'description', '')
-            return None
-        
-        # If we have a style from wardrobe but limited components,
-        # use wardrobe description as base and append modifications
-        has_partial_components = outfit.components and len(outfit.components) <= 3
-        
-        if has_partial_components and outfit.style != "custom":
-            # Get wardrobe description as base
-            wardrobe_desc = get_wardrobe_description()
-            base_desc = wardrobe_desc or outfit.description
-            
-            if base_desc:
-                # Build modifications
-                modifications = self._build_modifications_only(outfit)
-                if modifications:
-                    # Remove old shoes description if we're modifying shoes
-                    if "shoes" in outfit.components:
-                        for term in ["elegant high heels", "wearing heels", "pumps", "stilettos"]:
-                            base_desc = base_desc.replace(term, "").replace("  ", " ")
-                    return f"{base_desc}, {modifications}".strip().rstrip(",")
-                return base_desc
-        
-        # Full rebuild from components
-        parts: List[str] = []
-        order = ["top", "bra", "outerwear", "tie", "dress", "bottom", "panties", "pantyhose", "shoes"]
-        
-        for component in order:
-            value = outfit.get_component(component)
-            if value:
-                # Special case: shoes="none" means barefoot (should be included)
-                if value == "none":
-                    if component == "shoes":
-                        parts.append("barefoot, bare feet visible")
-                    # For other components, "none" means removed - check if we have a description
-                    else:
-                        desc_map = self.COMPONENT_DESCRIPTIONS.get(component, {})
-                        if "none" in desc_map:
-                            parts.append(desc_map["none"])
-                else:
-                    desc_map = self.COMPONENT_DESCRIPTIONS.get(component, {})
-                    readable = desc_map.get(value, value)
-                    parts.append(readable)
-        
-        # Add special
-        special = outfit.components.get("special", "")
-        if special:
-            parts.append(special)
-        
-        if parts:
-            return ", ".join(parts)
-        
-        # Fallback to wardrobe or existing description
-        wardrobe_desc = get_wardrobe_description()
-        return wardrobe_desc or outfit.description or "casual clothes"
-    
-    def _build_modifications_only(self, outfit) -> str:
-        """Build description for modified components only."""
-        parts: List[str] = []
-        
-        for component, value in outfit.components.items():
-            if value == "none":
-                if component == "shoes":
-                    parts.append("barefoot, bare feet visible")
-                    print(f"    [DEBUG Outfit] Adding 'barefoot' because shoes='none'")
-                else:
-                    desc_map = self.COMPONENT_DESCRIPTIONS.get(component, {})
-                    if "none" in desc_map:
-                        parts.append(desc_map["none"])
-            elif value and value not in ["true", "custom"]:
-                desc_map = self.COMPONENT_DESCRIPTIONS.get(component, {})
-                readable = desc_map.get(value, value)
-                parts.append(readable)
-                if component == "shoes":
-                    print(f"    [DEBUG Outfit] Adding shoes description: '{readable}' (value='{value}')")
-        
-        return ", ".join(parts)
-    
-    # ===================================================================
-    # MAJOR CHANGE - Complete outfit replacement
-    # ===================================================================
-    
-    def _is_major_change(self, user_input: str) -> Tuple[bool, str]:
-        """Detect if user wants complete outfit change.
-        
-        Returns:
-            Tuple of (is_major_change, outfit_description_in_italian)
-        """
-        text_lower = user_input.lower()
-        
-        # Check for change outfit keywords
-        for pattern in self.MAJOR_CHANGE_PATTERNS["change_outfit"]:
-            if re.search(pattern, text_lower, re.IGNORECASE):
-                # Extract what they want to wear
-                return True, self._extract_outfit_description(user_input)
-        
-        return False, ""
-    
-    def _extract_outfit_description(self, user_input: str) -> str:
-        """Extract outfit description from input."""
-        # Simple extraction - take text after change keywords
-        text_lower = user_input.lower()
-        
-        # Patterns to find the outfit
-        patterns = [
-            r"mette\s+(un\s+)?(?:altro|nuovo)?\s*('?\w+\s*(?:\w+\s*){0,5})\s*(?:abito|vestito|outfit)?",
-            r"si\s+cambia\s+(?:con\s+|in\s+)?('?\w+\s*(?:\w+\s*){0,5})",
-            r"vestito\s+(da\s+\w+|\w+\s+(?:rosso|blu|nero|bianco|elegante))",
-            r"abito\s+(da\s+\w+|\w+\s+(?:rosso|blu|nero|bianco|elegante))",
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text_lower, re.IGNORECASE)
-            if match:
-                return match.group(1).strip() if match.group(1) else match.group(0).strip()
-        
-        # If no specific pattern matched, return the whole input
-        return user_input
-    
+        outfit = game_state.get_outfit()
+        if outfit.modifications:
+            print(f"[OutfitModifier] Resetting {len(outfit.modifications)} modifications on phase change")
+            outfit.modifications.clear()
+            game_state.set_outfit(outfit)
+
     async def apply_major_change(
         self,
-        game_state,
+        game_state: "GameState",
         outfit_description_it: str,
         llm_manager=None,
     ) -> bool:
-        """Apply complete outfit change with LLM translation.
-        
+        """Apply a complete outfit change with optional LLM translation.
+
         Args:
             game_state: Current game state
-            outfit_description_it: Outfit description in Italian
-            llm_manager: LLM manager for translation (optional)
-            
+            outfit_description_it: Italian outfit description
+            llm_manager: Optional LLM manager for IT→EN translation
+
         Returns:
-            True if changed successfully
+            True if the change was applied
         """
         outfit = game_state.get_outfit()
         old_style = outfit.style
-        
-        # Translate to English using LLM if available
+
         if llm_manager:
             try:
                 outfit_description_en = await self._translate_outfit(
@@ -725,258 +245,276 @@ class OutfitModifierSystem:
                 outfit_description_en = outfit_description_it
         else:
             outfit_description_en = outfit_description_it
-        
-        # Reset outfit completely
+
+        # Reset to custom outfit
         outfit.style = "custom"
         outfit.description = outfit_description_en
-        outfit.components = {}  # Clear all components
+        outfit.base_description = outfit_description_it
+        outfit.base_sd_prompt = outfit_description_en
+        outfit.llm_generated_description = None
+        outfit.llm_generated_sd_prompt = None
+        outfit.components.clear()
+        outfit.modifications.clear()
         outfit.is_special = False
-        
-        # Mark as major custom outfit
-        outfit.set_component("major_custom", "true")
-        
-        game_state.set_outfit(outfit)
-        
-        print(f"[OutfitModifier] MAJOR CHANGE: {old_style} -> custom")
-        print(f"[OutfitModifier] IT: {outfit_description_it[:50]}...")
-        print(f"[OutfitModifier] EN: {outfit_description_en[:50]}...")
-        
-        return True
-    
-    async def _translate_outfit(
-        self,
-        description_it: str,
-        llm_manager,
-    ) -> str:
-        """Translate outfit description from Italian to English.
-        
-        Uses LLM for accurate translation for Stable Diffusion.
-        Falls back to basic translation if LLM fails or returns error text.
-        """
-        # First try basic translation (fast, reliable)
-        basic_result = self._basic_translate(description_it)
-        
-        # Try LLM for better translation
-        try:
-            prompt = f"""Translate this clothing description from Italian to English.
-This is for a fashion/clothing context. Be concise.
 
-Italian: {description_it}
-English:"""
-            
-            response = await llm_manager.generate(
-                system_prompt="You are a translator. Translate Italian clothing descriptions to English.",
-                user_input=prompt,
-                json_mode=False,
-            )
-            
-            if response and response.text:
-                translated = response.text.strip()
-                
-                # Check if LLM returned an error message (in Italian) instead of translation
-                error_indicators = [
-                    "mi scusi", "errore", "spiacente", "non posso", 
-                    "non posso aiutare", "i'm sorry", "error", "cannot"
-                ]
-                
-                is_error = any(ind in translated.lower() for ind in error_indicators)
-                is_italian = len([w for w in translated.split() if w.lower() in [
-                    "scusi", "c'è", "stato", "nel", "mio", "modulo"
-                ]]) > 2
-                
-                if not is_error and not is_italian and len(translated) > 5:
-                    return translated
-                else:
-                    print(f"[OutfitModifier] LLM returned error text, using basic translation")
-                    return basic_result
-                    
-        except Exception as e:
-            print(f"[OutfitModifier] LLM translation failed: {e}")
-        
-        # Fallback to basic translation
-        return basic_result
-    
-    def _basic_translate(self, text: str) -> str:
-        """Basic Italian to English translation for common outfit terms."""
-        translations = {
-            # Clothing types
-            "vestito": "dress",
-            "abito": "dress",
-            "gonna": "skirt",
-            "camicia": "shirt",
-            "blusa": "blouse",
-            "maglia": "sweater",
-            "scarpe": "shoes",
-            "tacchi": "high heels",
-            "calze": "stockings",
-            "collant": "pantyhose",
-            "reggiseno": "bra",
-            "mutande": "panties",
-            "perizoma": "thong",
-            "giacca": "jacket",
-            "blazer": "blazer",
-            "cravatta": "tie",
-            # Colors
-            "rosso": "red",
-            "rossa": "red",
-            "blu": "blue",
-            "nero": "black",
-            "nera": "black",
-            "bianco": "white",
-            "bianca": "white",
-            "verde": "green",
-            "giallo": "yellow",
-            "gialla": "yellow",
-            "rosa": "pink",
-            "viola": "purple",
-            "arancione": "orange",
-            "grigio": "grey",
-            "marrone": "brown",
-            # Styles
-            "elegante": "elegant",
-            "sera": "evening",
-            "formale": "formal",
-            "casual": "casual",
-            "sportivo": "sportswear",
-            "sexy": "sexy",
-            "mini": "mini",
-            "corto": "short",
-            "corta": "short",
-            "lungo": "long",
-            "lunga": "long",
-            "aderente": "tight",
-            "scollato": "low-cut",
-            "scollata": "low-cut",
-            "trasparente": "see-through",
-            # Specific outfits
-            "pigiama": "pajamas",
-            "bikini": "bikini",
-            "kimono": "kimono",
-            "lingerie": "lingerie",
-            "intimo": "underwear",
-            "uniforme": "uniform",
-            "costume": "swimsuit",
-            "da sera": "evening gown",
-            "da bagno": "swimsuit",
-            "da notte": "nightgown",
-            # Actions/States
-            "strappato": "torn",
-            "strappata": "torn",
-            "bagnato": "wet",
-            "bagnata": "wet",
-            "aperto": "open",
-            "aperta": "open",
-            "sbottonato": "unbuttoned",
-            "sbottonata": "unbuttoned",
-            "slacciato": "loose",
-            "slacciata": "loose",
-            "senza": "without",
-            "nudo": "nude",
-            "nuda": "nude",
-            # Body parts
-            "tette": "breasts",
-            "seno": "breasts",
-            "culo": "butt",
-            "gambe": "legs",
-            "piedi": "feet",
-            "viso": "face",
-            "capelli": "hair",
-            # Misc
-            "pelo": "hair",
-            "pubico": "pubic",
-            "sicuro": "tight",
-            "sicura": "tight",
-            "visibile": "visible",
-            "vedo": "showing",
-            "uscire": "showing",
-        }
-        
-        result = text.lower()
-        for it_word, en_word in translations.items():
-            result = re.sub(rf"\b{re.escape(it_word)}\b", en_word, result, flags=re.IGNORECASE)
-        
-        # Capitalize first letter
-        if result:
-            result = result[0].upper() + result[1:]
-        
-        return result.strip()
-    
-    # ===================================================================
-    # UI BUTTON METHODS
-    # ===================================================================
-    
-    def change_random_outfit(self, game_state, companion_def) -> Optional[str]:
-        """Change to random outfit from wardrobe.
-        
-        Called by UI "Cambia" button.
-        
+        game_state.set_outfit(outfit)
+
+        print(f"[OutfitModifier] MAJOR CHANGE: {old_style} -> custom")
+        print(f"[OutfitModifier] IT: {outfit_description_it[:60]}...")
+        print(f"[OutfitModifier] EN: {outfit_description_en[:60]}...")
+        return True
+
+    def change_random_outfit(self, game_state: "GameState", companion_def) -> Optional[str]:
+        """Change to a random wardrobe outfit.
+
+        Called by the UI "Cambia" button (via luna/ui/ handlers).
+
         Args:
             game_state: Current game state
             companion_def: Companion definition with wardrobe
-            
+
         Returns:
-            Name of new outfit or None if failed
+            New outfit style name or None
         """
-        if not companion_def or not companion_def.wardrobe:
+        if not companion_def or not getattr(companion_def, "wardrobe", None):
             return None
-        
+
         import random
-        
-        # Get available outfits
         outfits = list(companion_def.wardrobe.keys())
         current = game_state.get_outfit().style
-        
-        # Remove current from options
-        available = [o for o in outfits if o != current]
-        
-        if not available:
-            available = outfits  # If only one, allow same
-        
-        # Pick random
+        available = [o for o in outfits if o != current] or outfits
+
         new_outfit = random.choice(available)
-        
-        # Apply
-        outfit = game_state.get_outfit()
-        outfit.style = new_outfit
-        outfit.components = {}  # Clear modifications
-        outfit.is_special = False
-        
-        # Get description from wardrobe (use sd_prompt for detailed SD description)
-        wardrobe_def = companion_def.wardrobe[new_outfit]
-        if isinstance(wardrobe_def, str):
-            outfit.description = wardrobe_def
-        else:
-            outfit.description = getattr(wardrobe_def, 'sd_prompt', '') or \
-                                   getattr(wardrobe_def, 'description', new_outfit)
-        
-        game_state.set_outfit(outfit)
-        
+        self._apply_wardrobe_outfit(game_state, new_outfit, companion_def)
         print(f"[OutfitModifier] Random change: {current} -> {new_outfit}")
-        
         return new_outfit
-    
+
     async def change_custom_outfit(
         self,
-        game_state,
+        game_state: "GameState",
         description_it: str,
         llm_manager=None,
     ) -> str:
-        """Change to custom outfit from text description.
-        
-        Called by UI "Modifica" button.
-        
+        """Change to a custom outfit from a text description.
+
+        Called by the UI "Modifica" button.
+
         Args:
             game_state: Current game state
-            description_it: User's outfit description in Italian
+            description_it: Italian outfit description
             llm_manager: For translation
-            
+
         Returns:
-            Final outfit description in English
+            Final English outfit description
         """
         await self.apply_major_change(game_state, description_it, llm_manager)
-        
-        outfit = game_state.get_outfit()
-        return outfit.description
+        return game_state.get_outfit().description
+
+    # -------------------------------------------------------------------------
+    # Internal helpers
+    # -------------------------------------------------------------------------
+
+    def _detect_modifications(self, text: str) -> List[Tuple[str, str]]:
+        """Detect (component, state) modifications from input text.
+
+        Uses direct-phrase fast path first, then two-step type+component matching.
+        Returns a list of (component, state) tuples with no duplicates per component.
+        """
+        detected: Dict[str, str] = {}  # component -> state (first match wins)
+        lower = text.lower()
+
+        # Fast path: direct phrases
+        for entry in self._direct_compiled:
+            if entry["pattern"].search(lower):
+                comp = entry["component"]
+                if comp not in detected:
+                    detected[comp] = entry["state"]
+
+        # Two-step: mod-type + component
+        for mod_type, type_patterns in self._type_compiled.items():
+            if not any(p.search(lower) for p in type_patterns):
+                continue
+            allowed = MOD_APPLIES_TO.get(mod_type, [])
+            for component in allowed:
+                if component in detected:
+                    continue
+                comp_patterns = self._comp_compiled.get(component, [])
+                if any(p.search(lower) for p in comp_patterns):
+                    detected[component] = mod_type
+
+        return list(detected.items())
+
+    def _apply_modifications(
+        self,
+        outfit: "OutfitState",
+        modifications: List[Tuple[str, str]],
+        turn: int,
+        companion_def=None,
+    ) -> None:
+        """Apply a list of (component, state) modifications to the outfit."""
+        from luna.core.models import OutfitModification
+        from luna.systems.outfit_renderer import (
+            MODIFICATION_DESCRIPTIONS_IT,
+            MODIFICATION_DESCRIPTIONS_SD,
+        )
+
+        for component, state in modifications:
+            desc_it = MODIFICATION_DESCRIPTIONS_IT.get(component, {}).get(
+                state, f"{component} {state}"
+            )
+            desc_sd = MODIFICATION_DESCRIPTIONS_SD.get(component, {}).get(
+                state, f"{component} {state}"
+            )
+
+            mod = OutfitModification(
+                component=component,
+                state=state,
+                description=desc_it,
+                sd_description=desc_sd,
+                applied_at_turn=turn,
+            )
+
+            if state == "added" and component in outfit.modifications:
+                # Restore: remove the previous removal/modification
+                del outfit.modifications[component]
+            else:
+                outfit.modifications[component] = mod
+
+        # Rebuild legacy description field using the SD prompt (English)
+        # so that media/builders.py (which uses outfit.description for SD) stays correct.
+        from luna.systems.outfit_renderer import OutfitRenderer
+        outfit.description = OutfitRenderer.render_sd_prompt(outfit, companion_def)
+
+    def _apply_wardrobe_outfit(
+        self,
+        game_state: "GameState",
+        outfit_key: str,
+        companion_def,
+    ) -> None:
+        """Apply a wardrobe outfit (by key) to the game state."""
+        from luna.core.models import OutfitState
+        wardrobe_def = companion_def.wardrobe[outfit_key]
+
+        if isinstance(wardrobe_def, str):
+            new_outfit = OutfitState(
+                style=outfit_key,
+                description=wardrobe_def,
+                base_description=wardrobe_def,
+                base_sd_prompt=wardrobe_def,
+            )
+        else:
+            desc = getattr(wardrobe_def, "description", "") or outfit_key
+            sd = getattr(wardrobe_def, "sd_prompt", "") or desc
+            new_outfit = OutfitState(
+                style=outfit_key,
+                description=desc,
+                base_description=desc,
+                base_sd_prompt=sd,
+                is_special=bool(getattr(wardrobe_def, "special", False)),
+            )
+
+        game_state.set_outfit(new_outfit)
+
+    # -------------------------------------------------------------------------
+    # Major-change detection
+    # -------------------------------------------------------------------------
+
+    def _is_major_change(self, user_input: str) -> Tuple[bool, str]:
+        """Detect if the user wants a complete outfit replacement.
+
+        Returns:
+            (is_major, italian_description)
+        """
+        lower = user_input.lower()
+        for pattern in self._major_compiled:
+            if pattern.search(lower):
+                return True, self._extract_outfit_description(user_input)
+        return False, ""
+
+    def _extract_outfit_description(self, user_input: str) -> str:
+        """Extract a concise outfit description from the user's input."""
+        patterns = [
+            r"mette\s+(?:un|una)\s+(?:altro|nuovo|diverso)?\s*([\w\s]+?)(?:\s+(?:abito|vestito|outfit))?[.,!?]?$",
+            r"si\s+cambia\s+(?:con\s+|in\s+)?([\w\s]+?)(?:[.,!?]|$)",
+            r"vestito\s+([\w\s]+?)(?:[.,!?]|$)",
+            r"abito\s+([\w\s]+?)(?:[.,!?]|$)",
+            r"indossa\s+(?:un|una)?\s*([\w\s]+?)(?:[.,!?]|$)",
+        ]
+        lower = user_input.lower()
+        for pattern in patterns:
+            match = re.search(pattern, lower, re.IGNORECASE)
+            if match:
+                desc = match.group(1).strip()
+                if len(desc) > 3:
+                    return desc
+        return user_input
+
+    # -------------------------------------------------------------------------
+    # Translation (IT → EN for SD prompt)
+    # -------------------------------------------------------------------------
+
+    async def _translate_outfit(self, description_it: str, llm_manager) -> str:
+        """Translate Italian outfit description to English using LLM."""
+        basic = self._basic_translate(description_it)
+        try:
+            prompt = (
+                f"Translate this clothing description from Italian to English.\n"
+                f"Be concise and use fashion/Stable Diffusion terminology.\n\n"
+                f"Italian: {description_it}\nEnglish:"
+            )
+            response = await llm_manager.generate(
+                system_prompt="Translate Italian clothing descriptions to English concisely.",
+                user_input=prompt,
+                json_mode=False,
+            )
+            if response and response.text:
+                translated = response.text.strip()
+                error_indicators = [
+                    "mi scusi", "errore", "spiacente", "non posso",
+                    "i'm sorry", "error", "cannot",
+                ]
+                if (
+                    not any(ind in translated.lower() for ind in error_indicators)
+                    and len(translated) > 5
+                ):
+                    return translated
+        except Exception as e:
+            print(f"[OutfitModifier] LLM translation failed: {e}")
+        return basic
+
+    def _basic_translate(self, text: str) -> str:
+        """Basic Italian → English word substitution for common outfit terms."""
+        translations = {
+            "vestito": "dress", "abito": "dress", "gonna": "skirt",
+            "camicia": "shirt", "blusa": "blouse", "maglia": "sweater",
+            "scarpe": "shoes", "tacchi": "high heels", "calze": "stockings",
+            "collant": "pantyhose", "reggiseno": "bra", "mutande": "panties",
+            "perizoma": "thong", "giacca": "jacket", "blazer": "blazer",
+            "cravatta": "tie", "rosso": "red", "rossa": "red", "blu": "blue",
+            "nero": "black", "nera": "black", "bianco": "white", "bianca": "white",
+            "verde": "green", "giallo": "yellow", "rosa": "pink",
+            "viola": "purple", "arancione": "orange", "grigio": "grey",
+            "marrone": "brown", "elegante": "elegant", "sera": "evening",
+            "formale": "formal", "casual": "casual", "sportivo": "sportswear",
+            "sexy": "sexy", "mini": "mini", "corto": "short", "corta": "short",
+            "lungo": "long", "lunga": "long", "aderente": "tight",
+            "scollato": "low-cut", "scollata": "low-cut",
+            "trasparente": "see-through", "pigiama": "pajamas",
+            "bikini": "bikini", "kimono": "kimono", "lingerie": "lingerie",
+            "intimo": "underwear", "uniforme": "uniform", "costume": "swimsuit",
+            "da sera": "evening gown", "da bagno": "swimsuit", "da notte": "nightgown",
+            "strappato": "torn", "strappata": "torn", "bagnato": "wet",
+            "bagnata": "wet", "aperto": "open", "aperta": "open",
+            "sbottonato": "unbuttoned", "sbottonata": "unbuttoned",
+            "slacciato": "loose", "slacciata": "loose",
+            "senza": "without", "nudo": "nude", "nuda": "nude",
+        }
+        result = text.lower()
+        for it_word, en_word in translations.items():
+            result = re.sub(
+                rf"\b{re.escape(it_word)}\b", en_word, result, flags=re.IGNORECASE
+            )
+        return (result[0].upper() + result[1:]).strip() if result else result
 
 
 # Factory function for easy initialization
